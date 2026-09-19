@@ -100,6 +100,24 @@ keeps scans in memory with GET /scan/{id} and findings endpoints.
 - The generated test uses the redacted token (token values never leave the request path), so the
   copy-pasted test asserts with `Bearer alic...oken` — swap in the real token in your suite.
 
+**Addendum — one-click Verify Fix API (2026-09-19):**
+- New endpoint: `POST /scan/{scan_id}/verify` — re-probes every stored finding using a verify plan
+  captured at scan time (base URL, attacker/victim identities, endpoint templates + ownership maps;
+  tokens stay server-side). Original "was" evidence is snapshotted before any mutation; fresh
+  "now" probes are attached. A finding flips to `pass` only on a fresh 401/403 cross-user probe.
+- Response includes per-finding before/after (`was`/`now` status + observed code), fresh probe
+  evidence, `demo_mode` read from the target's `/health`, `verified_count`, `all_verified`.
+- Error contract: 404 unknown scan / scan without findings; 409 scan not completed or no verify
+  plan; 502 target unreachable during verification (no 500s).
+- New files: `app/scanner/verify.py`, `tests/test_verify.py`; `VerifyPlan` moved to
+  `app/scanner/bola.py` (avoids an engine↔verify circular import); findings now carry a
+  `verification` field. `conftest.py` `demo_server` yields the `Popen` handle and mode-restore
+  teardown tolerates a killed server.
+- Verified: engine pytest **43/43** (6 new verify tests: flip-to-pass with persisted finding
+  update, still-fails case, 404 unknown scan, 404 no-findings scan, 502 dead-target, redacted
+  fresh probes); live smoke **9/9** including "verify while still vulnerable does not flip" and
+  "verify after fix: 200 fail → 403 pass, demo_mode=secure"; demo suite still **26/26**.
+
 ---
 
 ## Phase 3 — Basic Frontend ⬜ NOT STARTED

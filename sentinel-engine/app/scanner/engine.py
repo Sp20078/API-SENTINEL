@@ -17,7 +17,16 @@ from ..models import Identity, Scan, ScanSummary
 from ..openapi_client import EndpointInfo, discover_get_endpoints, fetch_openapi
 from ..store import ScanRecord, next_id
 from ..target_guard import validate_scan_target
-from .bola import IdentityView, ObjectEndpoint, build_object_endpoints, check_endpoint, make_check, make_finding
+from .bola import (
+    IdentityView,
+    ObjectEndpoint,
+    VerifyPlan,
+    build_object_endpoints,
+    check_endpoint,
+    make_check,
+    make_finding,
+)
+from .verify import verify_findings
 
 # MVP mutation mappings (spec): resource kind -> {resource_id: owner user_id}
 DEFAULT_RESOURCE_OWNERSHIP: dict[str, dict[str, str]] = {
@@ -74,6 +83,10 @@ def run_scan(request_identities: list[Identity], target_base_url: str, openapi_u
     attacker_view = _identity_view(request_identities[0])
     victim_view = _identity_view(request_identities[1])
 
+    def _plan(object_endpoints: list[ObjectEndpoint]) -> VerifyPlan:
+        return VerifyPlan(base_url=base_url, attacker=attacker_view, victim=victim_view,
+                          endpoints=object_endpoints)
+
     scan = record.scan
     try:
         with httpx.Client(timeout=config.request_timeout) as client:
@@ -116,6 +129,7 @@ def run_scan(request_identities: list[Identity], target_base_url: str, openapi_u
             finished_at=finished.isoformat(),
             duration_ms=int((finished - started).total_seconds() * 1000),
         )
+        record.verify_plan = _plan(object_endpoints)  # tokens kept server-side for Verify Fix
         scan.state = "completed"
     except Exception as exc:  # noqa: BLE001 — scan failures are surfaced via API, not crashed
         scan.state = "failed"

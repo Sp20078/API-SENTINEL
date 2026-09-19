@@ -52,7 +52,7 @@ def demo_server():
                 time.sleep(0.25)
         else:
             raise RuntimeError("demo API did not become healthy")
-        yield DEMO_BASE
+        yield proc  # the Popen handle (tests may terminate it; base URL is DEMO_BASE)
     finally:
         proc.terminate()
         try:
@@ -75,11 +75,17 @@ def set_demo_mode(mode: str) -> None:
 def vulnerable_mode(demo_server):
     set_demo_mode("vulnerable")
     yield DEMO_BASE
-    set_demo_mode("vulnerable")  # restore default on teardown
+    try:
+        set_demo_mode("vulnerable")  # restore default on teardown
+    except httpx.HTTPError:
+        pass  # server may already be down (e.g. killed by the 502 test)
 
 
 @pytest.fixture()
 def secure_mode(demo_server):
     set_demo_mode("secure")
     yield DEMO_BASE
-    set_demo_mode("vulnerable")
+    try:
+        set_demo_mode("vulnerable")
+    except httpx.HTTPError:
+        pass  # server may already be down (e.g. killed by the 502 test)

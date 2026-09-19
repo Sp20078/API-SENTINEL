@@ -153,6 +153,16 @@ def main() -> int:
         assert '"Bearer alic...oken"' in test_code
         passed += 1
 
+        # --- 3b) verify while still vulnerable: re-probe must NOT flip ----------
+        v = engine.post(f"/scan/{scan['id']}/verify").json()
+        print(
+            f"verify (still vulnerable): verified={v['verified_count']}/{len(v['results'])} "
+            f"all_verified={v['all_verified']}"
+        )
+        assert v["verified_count"] == 0 and v["all_verified"] is False
+        assert all(r["now"]["observed_status"] == 200 for r in v["results"])
+        passed += 1
+
         # --- 4) secure mode: the fix verifies ----------------------------------
         set_demo_mode("secure")
         scan2 = run_scan(engine)
@@ -168,6 +178,26 @@ def main() -> int:
         order_check = next(c for c in checks if c["endpoint"] == "GET /api/orders/{order_id}")
         print(f"  verify-fix check: {order_check['endpoint']} observed {order_check['observed_status']} -> {order_check['status']}")
         assert order_check["observed_status"] == 403 and order_check["status"] == "pass"
+        passed += 1
+
+        # --- 4b) one-click Verify Fix on the original vulnerable-mode scan ------
+        r = engine.post(f"/scan/{scan['id']}/verify")
+        assert r.status_code == 200, r.text
+        v = r.json()
+        first = v["results"][0]
+        print(
+            f"[verify-fix] demo_mode={v['demo_mode']} "
+            f"verified={v['verified_count']}/{len(v['results'])}"
+        )
+        print(
+            f"  before/after: HTTP {first['was']['observed_status']} ({first['was']['status']}) "
+            f"-> HTTP {first['now']['observed_status']} ({first['now']['status']})"
+        )
+        assert v["demo_mode"] == "secure" and v["all_verified"] is True
+        assert first["was"]["observed_status"] == 200 and first["was"]["status"] == "fail"
+        assert first["now"]["observed_status"] in (401, 403) and first["now"]["status"] == "pass"
+        updated = engine.get(f"/scan/{scan['id']}/findings/{finding_id}").json()
+        assert updated["status"] == "pass"  # finding persisted the flip
         passed += 1
 
         # --- 5) non-local target rejected ---------------------------------------

@@ -101,6 +101,16 @@ class ObjectEndpoint:
         raise KeyError(f"no known resource owned by {user_id!r} for {self.endpoint}")
 
 
+@dataclass
+class VerifyPlan:
+    """Everything needed to re-probe findings later (tokens stay server-side)."""
+
+    base_url: str
+    attacker: IdentityView
+    victim: IdentityView
+    endpoints: list[ObjectEndpoint]
+
+
 @dataclass(frozen=True)
 class Verdict:
     status: str  # "fail" | "pass" | "skipped"

@@ -51,6 +51,15 @@ class Probe(BaseModel):
     body: dict[str, Any] | list[Any] | None
 
 
+class Verification(BaseModel):
+    """Fresh re-probe evidence recorded by POST /scan/{scan_id}/verify."""
+
+    verified_at: str
+    observed_status: int  # fresh cross-user status
+    blocked: bool  # True when the fresh cross-user probe returned 401/403
+    probes: list[Probe]
+
+
 class Finding(BaseModel):
     id: str
     type: str = "Broken Object-Level Authorization"
@@ -71,6 +80,7 @@ class Finding(BaseModel):
     impact: str
     recommendation: str
     status: CheckStatus
+    verification: Verification | None = None
 
 
 class ScanSummary(BaseModel):
@@ -113,3 +123,30 @@ class CheckResult(BaseModel):
     impact: str
     recommendation: str
     regression_test: str
+
+
+class WasNow(BaseModel):
+    """Before/after snapshot for one finding during verification."""
+
+    observed_status: int
+    status: CheckStatus
+
+
+class FindingVerification(BaseModel):
+    finding_id: str
+    endpoint: str
+    resource_owner: str
+    was: WasNow
+    now: WasNow
+    verified: bool
+    probes: list[Probe]  # fresh probe evidence (redacted)
+    note: str | None = None
+
+
+class VerifyResponse(BaseModel):
+    scan_id: str
+    verified_at: str
+    demo_mode: str | None
+    results: list[FindingVerification]
+    verified_count: int
+    all_verified: bool

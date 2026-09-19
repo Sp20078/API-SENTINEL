@@ -15,13 +15,15 @@ Non-local targets are rejected with 422 before any request is made.
 
 from __future__ import annotations
 
+import httpx
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 
-from .models import CheckResult, Finding, Scan, ScanRequest, ScanSummary
-from .scanner.engine import run_scan
+from .models import CheckResult, Finding, Scan, ScanRequest, ScanSummary, VerifyResponse
+from .scanner.engine import EngineConfig, run_scan
 from .scanner.regression import generate_regression_test
+from .scanner.verify import verify_findings
 from .store import store
 from .target_guard import UnsafeTargetError
 
@@ -119,3 +121,49 @@ def get_summary(scan_id: str) -> ScanSummary:
             detail=f"Scan {scan_id} has no summary (state={scan.state})",
         )
     return scan.summary
+
+
+@app.post("/scan/{scan_id}/verify", response_model=VerifyResponse, tags=["scan"])
+def verify_scan(scan_id: str) -> VerifyResponse:
+    """One-click Verify Fix: re-probe each stored finding against the live target.
+
+    409 if the scan never completed, 404 for unknown scans/findings-mappings,
+    502 if the target is unreachable this time around.
+    """
+    record = _record_or_404(scan_id)
+    if record.scan.state != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Scan {scan_id} is not completed (state={record.scan.state})",
+        )
+    if not record.findings:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Scan {scan_id} has no findings to verify",
+        )
+    if record.verify_plan is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Scan {scan_id} has no verify plan",
+        )
+
+    config = EngineConfig()
+    try:
+        with httpx.Client(timeout=config.request_timeout) as client:
+            response = verify_findings(client, scan_id, record.findings, record.verify_plan)
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Target unreachable during verification: {exc}",
+        )
+
+    # Best-effort: capture the target's current demo mode for the UI badge.
+    try:
+        with httpx.Client(timeout=config.request_timeout) as client:
+            health = client.get(f"{record.verify_plan.base_url}/health")
+            if health.status_code == 200:
+                mode = health.json().get("mode")
+                response.demo_mode = mode if isinstance(mode, str) else None
+    except (httpx.HTTPError, ValueError):
+        response.demo_mode = None
+    return response
