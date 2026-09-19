@@ -17,13 +17,31 @@ DEMO_PORT = 8001
 DEMO_BASE = f"http://127.0.0.1:{DEMO_PORT}"
 
 
+def _port_in_use(port: int) -> bool:
+    try:
+        httpx.get(f"http://127.0.0.1:{port}/health", timeout=0.5)
+        return True
+    except httpx.HTTPError:
+        return False
+
+
 @pytest.fixture(scope="session")
 def demo_server():
-    """Start the demo API in a uvicorn subprocess; yield base URL; terminate."""
+    """Start the demo API in a uvicorn subprocess; yield the Popen; terminate.
+
+    Skips (rather than cross-talks) when port 8001 is already serving — the
+    integration tests must never run against a foreign service, flip its mode,
+    or 'kill' someone else's server in the 502 test.
+    """
     import subprocess
-    import sys
     import time
     from pathlib import Path
+
+    if _port_in_use(DEMO_PORT):
+        pytest.skip(
+            f"port {DEMO_PORT} already in use — stop the running demo API first "
+            "(scripts/dev_daemon.sh stop)"
+        )
 
     demo_dir = Path(__file__).resolve().parents[2] / "vulnerable-demo-api"
     proc = subprocess.Popen(
@@ -45,6 +63,8 @@ def demo_server():
     )
     try:
         for _ in range(60):
+            if proc.poll() is not None:
+                raise RuntimeError("demo subprocess exited during startup (port conflict?)")
             try:
                 httpx.get(f"{DEMO_BASE}/health", timeout=1.0)
                 break
@@ -52,6 +72,8 @@ def demo_server():
                 time.sleep(0.25)
         else:
             raise RuntimeError("demo API did not become healthy")
+        if proc.poll() is not None:
+            raise RuntimeError("demo subprocess died after startup")
         yield proc  # the Popen handle (tests may terminate it; base URL is DEMO_BASE)
     finally:
         proc.terminate()

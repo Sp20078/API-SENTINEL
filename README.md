@@ -127,8 +127,10 @@ Prerequisites: **Python 3.11+**, **Node 18+**, `pip`, `npm`.
 **One-command demo launcher (recommended for the live demo):**
 
 ```bash
-./run_all.sh             # starts every existing service, waits for health, resets demo mode
-./run_all.sh --keep-mode # same, but leaves the demo API's current mode untouched
+./run_all.sh                    # starts every existing service, waits for health, resets demo mode
+./run_all.sh --keep-mode        # same, but leaves the demo API's current mode untouched
+scripts/dev_daemon.sh start     # alternative: detached background services (logs in .run/)
+scripts/dev_daemon.sh status    # or: stop
 ```
 
 It starts the demo target API (:8001) today and will automatically pick up the scanner engine
@@ -178,7 +180,7 @@ Phased build with acceptance gates — see [TASKS.md](TASKS.md) for the live che
 | 0 | Repo scaffold + plan | ✅ Done |
 | 1 | Vulnerable demo API + tests | ✅ Done |
 | 2 | Sentinel scanner engine | ✅ Done |
-| 3 | Basic dashboard | ⬜ Next |
-| 4 | Presentation-ready finding details | ⬜ Planned |
+| 3 | Basic dashboard | ✅ Done |
+| 4 | Presentation-ready finding details | ⬜ Next |
 | 5 | Polish, Docker Compose, demo script | ⬜ Planned |
 | 6 | Optional AI explanation (opt-in only) | ⬜ Blocked until approved |

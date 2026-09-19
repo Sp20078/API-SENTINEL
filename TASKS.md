@@ -120,19 +120,44 @@ keeps scans in memory with GET /scan/{id} and findings endpoints.
 
 ---
 
-## Phase 3 — Basic Frontend ⬜ NOT STARTED
+## Phase 3 — Basic Frontend ✅ DONE
 
 Planned: React + Vite + TypeScript + Tailwind dark dashboard on :5173 — config panel (readonly
 local targets, identity chips), mode switch, Run Authorization Scan, progressive scan steps,
 summary cards (score, endpoints, severity counts, pass/fail), findings list.
 
-- [ ] Switch demo API between vulnerable/secure from the UI (acceptance test)
-- [ ] Trigger a scan and render summary + findings list (acceptance test)
-- [ ] Graceful error handling for unreachable services (acceptance test)
-- [ ] Severity badges (Critical/High/Medium/Pass) per palette
+- [x] Switch demo API between vulnerable/secure from the UI (acceptance test)
+- [x] Trigger a scan and render summary + findings list (acceptance test)
+- [x] Graceful error handling for unreachable services (acceptance test)
+- [x] Severity badges (Critical/High/Medium/Pass) per palette
 
-**Verified:** —
-**Limitations:** —
+**Verified (2026-09-19):**
+- `npm run build` clean (strict `tsc -b` + Vite, 34 modules, no TS errors)
+- **Browser-verified in the live preview against the real running stack** (Chrome, screenshots):
+  - initial render: dark dashboard, header badges (Local Demo API dot + VULNERABLE mode),
+    readonly local target/OpenAPI inputs, identity chips (Alice/Bob customers, Priya admin)
+  - **Run Authorization Scan (vulnerable mode)**: 8-step progress panel completed, summary cards
+    score **10**, 3 endpoints tested (5 discovered), **3 critical findings** with red badges,
+    expected→observed 403→200 columns, finding IDs
+  - **Switch to Secure**: header badge flipped to SECURE, notice shown, button states updated
+  - **Scan in secure mode**: score **100**, 0 criticals, **3 passed checks** rendered as PASS rows,
+    green "no authorization failures" notice
+  - **Error handling**: demo API killed → header/target dots turned red within 5s, scan + mode
+    buttons disabled (no crash); after restart the UI recovered
+- Fixed during verification: Vite bound to IPv6-only (`host: true` now binds v4+v6 so
+  127.0.0.1:5173 works), duplicated "GET GET" method prefix in finding rows, engine test-suite
+  cross-talk with a running demo (conftest now skips demo-dependent tests when :8001 is busy)
+- Backend suites re-verified after all changes: engine **43/43**, demo **26/26**
+- New helper: `scripts/dev_daemon.sh start|status|stop` (setsid-detached services + logs in
+  `.run/`); `./run_all.sh` unchanged and still works
+
+**Assumptions / limitations:**
+- Finding-detail panel, token-redaction display proof, and Verify Fix button land in Phase 4
+  (API client already exposes the endpoints).
+- Progress steps animate client-side while the engine runs the real scan synchronously —
+  the spec's "realistic steps, preferably streamed or visually progressive".
+- Demo identity tokens are hardcoded constants in the client (synthetic demo data; the engine
+  redacts them in every response).
 
 ---
 
