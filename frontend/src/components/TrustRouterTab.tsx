@@ -189,10 +189,35 @@ const CATEGORY_META: Record<TrustCategory, { label: string; icon: string }> = {
   fx: { label: "Currency rates (FX)", icon: "💱" },
 };
 
+// --- localStorage persistence (local-first: no accounts, no database) ------
+const CATEGORY_KEY = "trust-router:category";
+const MODE_KEY = "trust-router:mode";
+const VALID_CATEGORIES: readonly string[] = Object.keys(CATEGORY_META);
+
+function loadStored(key: string, valid: readonly string[], fallback: string): string {
+  try {
+    const value = window.localStorage.getItem(key);
+    return value && valid.includes(value) ? value : fallback;
+  } catch {
+    return fallback; // storage unavailable (private mode, SSR, etc.)
+  }
+}
+
+function persist(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    /* non-fatal: selections just won't survive a reload */
+  }
+}
+
 export default function TrustRouterTab() {
-  const [category, setCategory] = useState<TrustCategory>("weather");
-  const [location, setLocation] = useState("Bengaluru");
-  const [mode, setMode] = useState("healthy");
+  const [initialCategory] = useState<TrustCategory>(() =>
+    loadStored(CATEGORY_KEY, VALID_CATEGORIES, "weather") as TrustCategory,
+  );
+  const [category, setCategory] = useState<TrustCategory>(initialCategory);
+  const [location, setLocation] = useState(initialCategory === "fx" ? "USD/INR" : "Bengaluru");
+  const [mode, setMode] = useState(() => loadStored(MODE_KEY, PRIMARY_MODES, "healthy"));
   const [busy, setBusy] = useState(false);
   const [settingMode, setSettingMode] = useState(false);
   const [result, setResult] = useState<TrustRouterResult | null>(null);
@@ -202,6 +227,7 @@ export default function TrustRouterTab() {
 
   const switchCategory = useCallback((next: TrustCategory) => {
     setCategory(next);
+    persist(CATEGORY_KEY, next);
     setLocation(next === "weather" ? "Bengaluru" : "USD/INR");
     setResult(null);
     setError(null);
@@ -216,6 +242,7 @@ export default function TrustRouterTab() {
       try {
         const resp = await trustApi.setPrimaryMode(next, category);
         setMode(resp.mode);
+        persist(MODE_KEY, resp.mode);
         setCurrentMode(resp.mode);
         setNotice(`Primary provider mode set to ${resp.mode} (${resp.category}).`);
       } catch (e) {
