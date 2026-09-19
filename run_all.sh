@@ -4,8 +4,9 @@
 #
 # Starts every service that exists, in dependency order, for the live demo:
 #   1. vulnerable-demo-api  → http://127.0.0.1:8001  (the scan target)
-#   2. sentinel-engine      → http://127.0.0.1:8000  (scanner; starts once built)
-#   3. frontend             → http://localhost:5173  (dashboard; once built)
+#   2. sentinel-engine      → http://127.0.0.1:8000  (scanner + Trust Router)
+#   3. weather-providers    → http://127.0.0.1:8002  (Trust Router simulators)
+#   4. frontend             → http://localhost:5173  (dashboard; once built)
 #
 # Usage:
 #   ./run_all.sh              # start everything available, block until Ctrl+C
@@ -27,10 +28,12 @@ mkdir -p "$LOG_DIR"
 
 DEMO_DIR="$ROOT/vulnerable-demo-api"
 ENGINE_DIR="$ROOT/sentinel-engine"
+WEATHER_DIR="$ROOT/weather-providers"
 FRONTEND_DIR="$ROOT/frontend"
 
 DEMO_PORT=8001
 ENGINE_PORT=8000
+WEATHER_PORT=8002
 FRONTEND_PORT=5173
 
 KEEP_MODE=0
@@ -128,6 +131,7 @@ start_frontend() {
 # --- launch ----------------------------------------------------------------
 start_python_service "$DEMO_DIR" "$DEMO_PORT" "demo-api" "app/main.py"
 start_python_service "$ENGINE_DIR" "$ENGINE_PORT" "scanner-engine" "app/main.py"
+start_python_service "$WEATHER_DIR" "$WEATHER_PORT" "weather-providers" "app/main.py"
 start_frontend
 
 if port_in_use "$DEMO_PORT" && [ "$KEEP_MODE" -ne 0 ]; then
@@ -144,9 +148,10 @@ fi
 
 echo ""
 echo "================================ API Sentinel — demo is up ================"
-echo "  Dashboard      : http://localhost:$FRONTEND_PORT   (once Phase 3 lands)"
-echo "  Scanner engine : http://127.0.0.1:$ENGINE_PORT/health   (once Phase 2 lands)"
-echo "  Demo target API: http://127.0.0.1:$DEMO_PORT/health"
+echo "  Dashboard        : http://localhost:$FRONTEND_PORT"
+echo "  Scanner engine   : http://127.0.0.1:$ENGINE_PORT/health"
+echo "  Demo target API  : http://127.0.0.1:$DEMO_PORT/health"
+echo "  Weather providers: http://127.0.0.1:$WEATHER_PORT/health   (Trust Router demo)"
 echo ""
 echo "  Hero demo check (vulnerable mode):"
 echo "    curl -s -H 'Authorization: Bearer alice-token' \\"

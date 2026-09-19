@@ -15,12 +15,15 @@ Non-local targets are rejected with 422 before any request is made.
 
 from __future__ import annotations
 
+import os
+
 import httpx
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 
 from .models import CheckResult, Finding, Scan, ScanRequest, ScanSummary, VerifyResponse
+from .trust_router.api import router as trust_router_router
 from .scanner.engine import EngineConfig, run_scan
 from .scanner.regression import generate_regression_test
 from .scanner.verify import verify_findings
@@ -36,13 +39,25 @@ app = FastAPI(
     version="0.1.0",
 )
 
+# Dashboard origins (default: the Vite dev server). Extra loopback origins can
+# be added for local tooling via CORS_EXTRA_ORIGINS (comma-separated).
+_cors_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+_cors_origins += [
+    o.strip()
+    for o in os.environ.get("CORS_EXTRA_ORIGINS", "").split(",")
+    if o.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# API Sentinel Mesh — Trust Router (additive module; scanner routes untouched)
+app.include_router(trust_router_router)
 
 
 @app.get("/health", tags=["system"])
