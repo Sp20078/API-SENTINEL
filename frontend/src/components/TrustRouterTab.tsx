@@ -211,6 +211,14 @@ function persist(key: string, value: string): void {
   }
 }
 
+function clearStored(key: string): void {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    /* non-fatal */
+  }
+}
+
 export default function TrustRouterTab() {
   const [initialCategory] = useState<TrustCategory>(() =>
     loadStored(CATEGORY_KEY, VALID_CATEGORIES, "weather") as TrustCategory,
@@ -270,6 +278,25 @@ export default function TrustRouterTab() {
     }
   }, [category, location]);
 
+  const resetPreferences = useCallback(async () => {
+    clearStored(CATEGORY_KEY);
+    clearStored(MODE_KEY);
+    setCategory("weather");
+    setLocation("Bengaluru");
+    setMode("healthy");
+    setResult(null);
+    setError(null);
+    setCurrentMode(null);
+    setNotice("Preferences cleared — back to defaults (weather · healthy).");
+    try {
+      // Re-align the default category's simulator with the default display.
+      const resp = await trustApi.setPrimaryMode("healthy", "weather");
+      setCurrentMode(resp.mode);
+    } catch {
+      /* engine/simulator may be down; the local preferences are still reset */
+    }
+  }, []);
+
   const primary = result?.attempts.find((a) => a.role === "primary") ?? null;
   const backup = result?.attempts.find((a) => a.role === "backup") ?? null;
 
@@ -288,6 +315,14 @@ export default function TrustRouterTab() {
             primary mode: <span className="font-mono text-slate-400">{currentMode}</span>
           </span>
         )}
+        <button
+          type="button"
+          onClick={resetPreferences}
+          title="Clear saved category/mode preferences and set the weather primary mode back to healthy"
+          className="ml-auto inline-flex items-center gap-1 rounded-md border border-line bg-surface-800 px-2 py-1 text-[11px] font-semibold tracking-wide text-slate-400 transition hover:bg-surface-700 hover:text-slate-200"
+        >
+          ↺ Reset
+        </button>
       </div>
 
       {error && (
