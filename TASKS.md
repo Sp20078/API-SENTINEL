@@ -52,23 +52,53 @@ modes (runtime-switchable via `POST /admin/mode`), `/health` exposing active mod
 
 ---
 
-## Phase 2 — Scanner Engine ⬜ NOT STARTED
+## Phase 2 — Scanner Engine ✅ DONE
 
 Planned: FastAPI scanner on :8000 — fetches the target's OpenAPI contract, validates local-only
 targets, runs deterministic BOLA checks (own-resource baseline → id mutation → cross-user probe),
 captures evidence, applies severity rules, redacts tokens, generates pytest regression tests,
 keeps scans in memory with GET /scan/{id} and findings endpoints.
 
-- [ ] `POST /scan`, `GET /scan/{scan_id}`, `GET /scan/{scan_id}/findings`, finding + test endpoints
-- [ ] OpenAPI fetched and parsed from the target; GET routes + path params discovered
-- [ ] Local-only target whitelist enforced (rejects non-local targets) (acceptance test)
-- [ ] BOLA detected Alice→Bob order in vulnerable mode (acceptance test)
-- [ ] Pass reported for same probe in secure mode (acceptance test)
-- [ ] Tokens redacted in scanner responses (acceptance test)
-- [ ] Regression test text generated per finding; `generated-tests/` export supported
+- [x] `POST /scan`, `GET /scan/{scan_id}`, `GET /scan/{scan_id}/findings`, finding + test endpoints
+- [x] OpenAPI fetched and parsed from the target; GET routes + path params discovered
+- [x] Local-only target whitelist enforced (rejects non-local targets) (acceptance test)
+- [x] BOLA detected Alice→Bob order in vulnerable mode (acceptance test)
+- [x] Pass reported for same probe in secure mode (acceptance test)
+- [x] Tokens redacted in scanner responses (acceptance test)
+- [x] Regression test text generated per finding; `generated-tests/` export supported
 
-**Verified:** —
-**Limitations:** —
+**Verified (2026-09-19):**
+- Engine pytest: **38/38 passed** (`sentinel-engine/venv/bin/python -m pytest tests -v`)
+  - 16 target-guard unit tests (local accepted: localhost/127.x/10.x/192.168.x/[::1]/`demo-api`;
+    rejected: public hosts, https, ftp, credentialed URLs, link-local)
+  - 9 unit tests: redaction (`Bearer alic...oken`), spec-exact sensitive-field list, dotted-path
+    detection (incl. nested + suffix keys), regression-test generation (valid Python, path-only
+    request line, redacted header, `assert response.status_code in [401, 403]`)
+  - 13 integration tests against a **real demo API subprocess**: vulnerable-mode finding for
+    `GET /api/orders/{order_id}` (critical, Alice→Bob, own probe 200 baseline + cross 200,
+    exposed `items/total/shipping_address`) and profile finding; secure-mode pass with observed 403
+    and score 100; verify-fix before/after flow; no raw token anywhere in API output;
+    non-local target → 422; unreachable local target → failed scan (no crash); scan 404s
+- Live smoke (`scripts/live_smoke.py`, real demo subprocess + engine server on 127.0.0.1):
+  **7/7 checks passed** — vulnerable: 3 findings (order, profile, **plus the cross-user order-list
+  leak on `GET /api/users/{user_id}/orders`**), score 10; secure: 3 passes, score 100, order check
+  observed 403; generated test compiles; non-local target 422
+- `./run_all.sh` now auto-starts both services (demo-api :8001, scanner-engine :8000)
+- Demo suite still green: **26/26**
+
+**Assumptions / limitations:**
+- Attacker = first identity with role `customer` (Alice); victim = next customer (Bob) — matches
+  the spec's POST /scan example.
+- MVP mutation mappings are fixed (`order-1001/1002`, `user-101/102`); endpoint→mapping matching
+  is by path param name (`{order_id}` → order map, `{user_id}` → user map).
+- Findings IDs are sequential per engine process (BOLA-001…); in-memory store (no SQLite) —
+  scan history UI not in MVP scope.
+- Severity: critical when the deterministic sensitive-field list hits the cross-user body
+  (order + profile bodies here), medium if a protected resource returns 200 without sensitive
+  fields; passes recorded as checks, not findings.
+- Two probe models stored per finding/check: `own_resource` baseline + `cross_user` evidence.
+- The generated test uses the redacted token (token values never leave the request path), so the
+  copy-pasted test asserts with `Bearer alic...oken` — swap in the real token in your suite.
 
 ---
 

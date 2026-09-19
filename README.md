@@ -177,8 +177,8 @@ Phased build with acceptance gates — see [TASKS.md](TASKS.md) for the live che
 |---|---|---|
 | 0 | Repo scaffold + plan | ✅ Done |
 | 1 | Vulnerable demo API + tests | ✅ Done |
-| 2 | Sentinel scanner engine | ⬜ Next |
-| 3 | Basic dashboard | ⬜ Planned |
+| 2 | Sentinel scanner engine | ✅ Done |
+| 3 | Basic dashboard | ⬜ Next |
 | 4 | Presentation-ready finding details | ⬜ Planned |
 | 5 | Polish, Docker Compose, demo script | ⬜ Planned |
 | 6 | Optional AI explanation (opt-in only) | ⬜ Blocked until approved |
