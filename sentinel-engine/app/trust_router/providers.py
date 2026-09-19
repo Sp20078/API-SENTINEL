@@ -56,15 +56,17 @@ def build_provider_config(role: str, provider_id: str, url: str) -> ProviderConf
     return ProviderConfig(role=role, provider_id=provider_id, url=validate_provider_url(url))
 
 
-def call_provider(client: httpx.Client, config: ProviderConfig, city: str) -> ProviderCall:
-    """Call a weather provider with hard timeouts; never raises.
+def call_provider(
+    client: httpx.Client, config: ProviderConfig, params: dict[str, str]
+) -> ProviderCall:
+    """Call a provider with hard timeouts; never raises.
 
     Returns a ProviderCall with status_code/body, or status_code=None plus a
     typed error message (timeout / connection failure / non-JSON body).
     """
     started = time.perf_counter()
     try:
-        response = client.get(config.url, params={"city": city})
+        response = client.get(config.url, params=params)
     except httpx.TimeoutException:
         latency = int((time.perf_counter() - started) * 1000)
         return ProviderCall(

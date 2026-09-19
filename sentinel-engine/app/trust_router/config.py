@@ -1,8 +1,9 @@
-"""Trust Router configuration: pinned loopback provider URLs.
+"""Trust Router configuration: pinned loopback provider URLs, per category.
 
-Defaults point at the local weather-providers simulator (:8002). Overrides
-are server-side only (env vars), validated by the package's own loopback
-guard — API clients can never point the Trust Router at another host.
+Defaults point at the local provider simulator (:8002). Overrides are
+server-side only (env vars, per category), validated by the package's own
+loopback guard — API clients can never point the Trust Router at another
+host.
 """
 
 from __future__ import annotations
@@ -10,32 +11,26 @@ from __future__ import annotations
 import os
 
 from .guard import validate_provider_url
-
-DEFAULT_PRIMARY_URL = "http://127.0.0.1:8002/primary/weather"
-DEFAULT_BACKUP_URL = "http://127.0.0.1:8002/backup/weather"
-DEFAULT_PRIMARY_MODE_URL = "http://127.0.0.1:8002/primary/mode"
-
-ENV_PRIMARY_URL = "TRUST_ROUTER_PRIMARY_URL"
-ENV_BACKUP_URL = "TRUST_ROUTER_BACKUP_URL"
-ENV_PRIMARY_MODE_URL = "TRUST_ROUTER_PRIMARY_MODE_URL"
+from .registry import CategorySpec
 
 
-def primary_url() -> str:
-    return validate_provider_url(
-        os.environ.get(ENV_PRIMARY_URL, DEFAULT_PRIMARY_URL), what="primary provider URL"
-    )
+def _url(env_name: str, default: str, what: str) -> str:
+    return validate_provider_url(os.environ.get(env_name, default), what=what)
 
 
-def backup_url() -> str:
-    return validate_provider_url(
-        os.environ.get(ENV_BACKUP_URL, DEFAULT_BACKUP_URL), what="backup provider URL"
-    )
+def primary_url(spec: CategorySpec) -> str:
+    return _url(spec.env_primary_url, spec.default_primary_url, f"{spec.category} primary provider URL")
 
 
-def primary_mode_url() -> str:
-    return validate_provider_url(
-        os.environ.get(ENV_PRIMARY_MODE_URL, DEFAULT_PRIMARY_MODE_URL),
-        what="primary-mode URL",
+def backup_url(spec: CategorySpec) -> str:
+    return _url(spec.env_backup_url, spec.default_backup_url, f"{spec.category} backup provider URL")
+
+
+def primary_mode_url(spec: CategorySpec) -> str:
+    return _url(
+        spec.env_primary_mode_url,
+        spec.default_primary_mode_url,
+        f"{spec.category} primary-mode URL",
     )
 
 

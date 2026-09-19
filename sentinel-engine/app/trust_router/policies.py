@@ -22,12 +22,14 @@ from .schema import PROHIBITED_RAW_FIELDS
 
 MAX_LATENCY_MS = 2000
 MAX_DATA_AGE_MINUTES = 30.0
-REQUIRED_CANONICAL_FIELDS: tuple[str, ...] = (
-    "location",
-    "temperature_c",
-    "condition",
-    "observed_at",
-)
+
+
+def canonical_value(canonical: "RawCanonical", name: str) -> Any:
+    """Read a canonical field: flat attribute first, then the metrics map."""
+    value = getattr(canonical, name, None)
+    if value is None and canonical.metrics:
+        return canonical.metrics.get(name)
+    return value
 
 CHECK_LABELS = {
     "availability": "Primary reachable",
@@ -68,18 +70,22 @@ def _check(
     return passed
 
 
-def find_prohibited_fields(body: Any) -> list[str]:
+def find_prohibited_fields(
+    body: Any,
+    prohibited: tuple[str, ...] = PROHIBITED_RAW_FIELDS,
+) -> list[str]:
     """Return prohibited raw-field names present anywhere in the payload.
 
     Recurses into nested objects so leaked secrets cannot hide in sub-objects
     (e.g. the backup provider's meta/current nesting).
     """
+    forbidden = set(prohibited)
     found: list[str] = []
 
     def _walk(node: Any) -> None:
         if isinstance(node, dict):
             for key, value in node.items():
-                if isinstance(key, str) and key in PROHIBITED_RAW_FIELDS:
+                if isinstance(key, str) and key in forbidden:
                     found.append(key)
                 _walk(value)
         elif isinstance(node, list):
@@ -92,7 +98,15 @@ def find_prohibited_fields(body: Any) -> list[str]:
     return ordered
 
 
-def evaluate_policies(observation: ProviderObservation) -> list[PolicyCheck]:
+def evaluate_policies(
+    observation: ProviderObservation,
+    required_canonical_fields: tuple[str, ...] = (
+        "location",
+        "temperature_c",
+        "condition",
+        "observed_at",
+    ),
+) -> list[PolicyCheck]:
     """Evaluate all six policy checks for one provider observation."""
     now = datetime.now(timezone.utc)
     checks: list[PolicyCheck] = []
@@ -169,14 +183,14 @@ def evaluate_policies(observation: ProviderObservation) -> list[PolicyCheck]:
     if observation.canonical is not None:
         missing = [
             name
-            for name in REQUIRED_CANONICAL_FIELDS
-            if getattr(observation.canonical, name) in (None, "")
+            for name in required_canonical_fields
+            if canonical_value(observation.canonical, name) in (None, "")
         ]
         if not missing:
             _check(
                 "required_fields",
                 True,
-                f"{len(REQUIRED_CANONICAL_FIELDS)}/{len(REQUIRED_CANONICAL_FIELDS)} canonical fields present",
+                f"{len(required_canonical_fields)}/{len(required_canonical_fields)} canonical fields present",
                 checks,
             )
         else:

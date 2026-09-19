@@ -36,7 +36,10 @@ def _freshness_points(age_min: float) -> int:
     return max(int(round(15 * (1 - age_min / 60.0))), 0)
 
 
-def compute_trust_score(observation: "ProviderObservation") -> TrustScore:
+def compute_trust_score(
+    observation: "ProviderObservation",
+    required_count: int = 4,
+) -> TrustScore:
     now_observed = observation.canonical is not None
     age = (
         data_age_minutes(observation.canonical.observed_at)
@@ -77,7 +80,11 @@ def compute_trust_score(observation: "ProviderObservation") -> TrustScore:
             id="required_fields",
             earned=WEIGHTS["required_fields"] if now_observed else 0,
             max=WEIGHTS["required_fields"],
-            detail="4/4 canonical fields present" if now_observed else "no valid payload",
+            detail=(
+                f"{required_count}/{required_count} canonical fields present"
+                if now_observed
+                else "no valid payload"
+            ),
         ),
         TrustScoreComponent(
             id="prohibited_fields",

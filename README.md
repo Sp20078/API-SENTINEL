@@ -9,7 +9,9 @@
 >   primary API response for availability, latency, schema validity, freshness, required fields,
 >   and prohibited-field policies; if the primary is unsafe or unreliable it routes to an approved
 >   semantically compatible backup provider, normalizes the data into one stable response contract,
->   and produces an auditable explanation of the decision.
+>   and produces an auditable explanation of the decision. Supported categories: **weather** and
+>   **currency rates (FX)** — same policy engine, same trust score, same audit trail, proving the
+>   gateway is provider-agnostic.
 >
 > **100% local. 100% deterministic. No AI keys, no paid APIs, no cloud, no accounts, no database.**
 
@@ -37,7 +39,7 @@ regression tests that drop straight into CI.
 The scanner asks *“is this API safe to call?”* The Trust Router asks the complementary question:
 *“can this response be trusted — and if not, what do we do instead?”*
 
-For a requested category (first supported: **weather**) it:
+For a requested category (**weather**, **FX rates**) it:
 
 1. Calls the **primary provider** and measures latency.
 2. Validates the raw response against a **provider-specific schema**.
@@ -59,7 +61,7 @@ For a requested category (first supported: **weather**) it:
    returns a **safe degraded response** with no fabricated weather values and an explicit
    `unavailable: …` reason.
 
-Canonical response contract:
+Canonical response contract (weather — flat, per MVP spec; other categories carry their values in a `metrics` map):
 
 ```json
 {
@@ -75,6 +77,11 @@ Canonical response contract:
 }
 ```
 
+FX responses normalize into the same envelope: `location` holds the pair (`USD/INR`) and the
+rates live in `metrics` (`{"rate": 83.12, "inverse_rate": 0.012}`) — normalized from the backup
+provider's deliberately different nested schema (`result.mid`, `result.rate_of_exchange`,
+`result.as_of`).
+
 ---
 
 ## 🏗️ Architecture
@@ -83,14 +90,14 @@ Four local services, no cloud dependencies:
 
 ```text
 ┌────────────────────┐      ┌──────────────────────┐      ┌───────────────────────────┐
-│ frontend (Vite)    │─────▶│ sentinel-engine      │─────▶│ weather-providers :8002   │
-│ React dashboard    │      │ FastAPI :8000        │      │ local weather simulators  │
-│ :5173              │      │ Module A: BOLA scan  │      │  /primary/weather (5      │
-│  Tab 1: Authorization│    │ Module B: Trust      │      │   fault modes)            │
-│         Sentinel   │      │          Router      │      │  /backup/weather  (nested │
-│  Tab 2: Trust Router│     │ (isolated packages:  │      │   different schema)       │
-└────────────────────┘      │  app/scanner vs      │      └───────────────────────────┘
-                            │  app/trust_router)   │
+│ frontend (Vite)    │─────▶│ sentinel-engine      │─────▶│ provider-simulators :8002 │
+│ React dashboard    │      │ FastAPI :8000        │      │ local synthetic providers │
+│ :5173              │      │ Module A: BOLA scan  │      │ /primary/…  (5 fault      │
+│  Tab 1: Authorization│    │ Module B: Trust      │      │  modes per category)      │
+│         Sentinel   │      │          Router      │      │ /backup/…    (nested      │
+│  Tab 2: Trust Router│     │ (isolated packages:  │      │  different schemas)       │
+└────────────────────┘      │  app/scanner vs      │      │ categories: weather + fx  │
+                            │  app/trust_router)   │      └───────────────────────────┘
                             └──────────┬───────────┘
                                        │ (Module A only)
                             ┌──────────▼───────────────┐
@@ -104,7 +111,7 @@ Four local services, no cloud dependencies:
 | `frontend/` | 5173 | Dark developer-tool dashboard with two tabs: **Authorization Sentinel** (scans, evidence, Verify Fix) and **Trust Router** (policy checks, score, timeline, fallback) |
 | `sentinel-engine/` | 8000 | Module A: OpenAPI discovery, deterministic BOLA checks, findings, generated tests. Module B: Trust Router policy engine, normalizer, audit trail (`app/trust_router/`, import-isolated from the scanner) |
 | `vulnerable-demo-api/` | 8001 | E-commerce demo API with **vulnerable**/**secure** modes — the BOLA scan target |
-| `weather-providers/` | 8002 | Module B's local providers: a mode-switchable **primary** (`healthy`, `slow_response`, `http_503`, `malformed_schema`, `stale_data`) and a fixed healthy **backup** with a deliberately different nested JSON schema |
+| `weather-providers/` | 8002 | Module B's local provider simulators for **both categories** (weather + FX): per-category mode-switchable **primaries** (`healthy`, `slow_response`, `http_503`, `malformed_schema`, `stale_data`) and fixed healthy **backups** with deliberately different nested JSON schemas |
 
 **Trust Router endpoints**
 
@@ -114,6 +121,11 @@ Four local services, no cloud dependencies:
 | `POST /trust-router/request` | `{"city": "Bengaluru"}` → normalized response + policy checks + score + timeline |
 | `POST /trust-router/primary-mode` | `{"mode": "stale_data"}` → switch the primary simulator's fault mode |
 | `GET /trust-router/audit/{request_id}` | The full stored decision record for one request |
+
+The gateway is **category-agnostic**: each category is one `CategorySpec` entry in
+`app/trust_router/registry.py` (schemas, normalizer, canonical builder, pinned env-var names),
+and the policy engine, scorer, orchestrator, and audit trail are shared. FX fault modes are
+independent of weather modes (`POST /trust-router/primary-mode` takes a `category`).
 
 **Isolation by design:** `app/trust_router/` imports only stdlib + httpx + pydantic + fastapi —
 never `app.scanner`/`app.store`/`app.models` (enforced by `tests/test_module_isolation.py`). It has
@@ -150,10 +162,15 @@ calls have hard timeouts (connect 1.5 s / read 2.0 s) and degrade gracefully int
 4. Try **`http_503`**, **`slow_response`** (times out past the 2000 ms budget), and
    **`malformed_schema`** (missing field + leaked `internal_user_id`) — each ends in an auditable
    fallback with the failing check called out.
-5. For the **safe degraded** state, stop the weather-providers service and run a request: both calls
-   fail, and the response contains **no fabricated weather values** — only an explicit
-   `unavailable: …` reason.
-6. Every run is auditable afterwards:
+5. Switch to the **Currency rates (FX)** category (💱), pick a pair like `USD/INR`, and repeat:
+   same policy checks, same trust-score panel, same fallback behavior — but a completely different
+   provider schema and canonical shape (`rate`, `inverse_rate` in `metrics`). Set the **FX**
+   primary to `malformed_schema` to see it leak `customer_email`, fail the prohibited-field gate,
+   and fall back to the FX backup's nested `result.*` schema.
+6. For the **safe degraded** state, stop the provider-simulators service and run a request in
+   either category: both calls fail, and the response contains **no fabricated values** — only an
+   explicit `unavailable: …` reason.
+7. Every run is auditable afterwards:
 
    ```bash
    curl -s http://127.0.0.1:8000/trust-router/audit/tr-req-0001 | python3 -m json.tool
@@ -180,6 +197,10 @@ calls have hard timeouts (connect 1.5 s / read 2.0 s) and degrade gracefully int
 
 **Weather cities (synthetic)**: Bengaluru (27.5 °C, partly cloudy), London, New York, Singapore,
 Tokyo, Sydney — plus deterministic synthesized values for any other city string.
+
+**FX pairs (synthetic)**: USD/INR (83.12), USD/EUR (0.9134), USD/GBP, USD/JPY, USD/SGD, USD/AUD —
+plus deterministic synthesized rates for any other pair. FX fault modes are controlled separately
+from weather modes.
 
 **Hero request (Module A)**
 
@@ -271,6 +292,12 @@ curl -s -X POST http://127.0.0.1:8000/trust-router/primary-mode \
      -H 'Content-Type: application/json' -d '{"mode":"stale_data"}'
 curl -s -X POST http://127.0.0.1:8000/trust-router/request \
      -H 'Content-Type: application/json' -d '{"city":"Bengaluru"}' | python3 -m json.tool
+
+# FX category (same gateway, different providers + schema):
+curl -s -X POST http://127.0.0.1:8000/trust-router/primary-mode \
+     -H 'Content-Type: application/json' -d '{"mode":"stale_data","category":"fx"}'
+curl -s -X POST http://127.0.0.1:8000/trust-router/request \
+     -H 'Content-Type: application/json' -d '{"location":"USD/INR","category":"fx"}' | python3 -m json.tool
 ```
 
 Docker Compose (`docker compose up --build`) arrives in Phase 5.

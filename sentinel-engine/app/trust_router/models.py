@@ -1,13 +1,17 @@
 """Trust Router pydantic models.
 
-Canonical WeatherResponse contract (spec):
+Canonical response contract (weather, per MVP spec):
   {location, temperature_c, humidity_percent, condition, observed_at,
    source, fallback_used, trust_score, decision_reason}
+
+Multi-category extension (additive): CanonicalResponse carries `category`
+and a `metrics` map for category-specific values (FX: rate, inverse_rate).
+Weather responses keep the exact flat fields above.
 """
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -71,9 +75,14 @@ class ProviderAttempt(BaseModel):
     trust_score: TrustScore | None = None
 
 
-class WeatherResponse(BaseModel):
-    """The stable canonical response contract."""
+class CanonicalResponse(BaseModel):
+    """The stable canonical response contract, generalized per category.
 
+    Weather keeps the spec'd flat fields; other categories carry their
+    canonical values in `metrics` (e.g. FX: rate, inverse_rate).
+    """
+
+    category: str = "weather"
     location: str | None = None
     temperature_c: float | None = None
     humidity_percent: int | None = None
@@ -83,6 +92,7 @@ class WeatherResponse(BaseModel):
     fallback_used: bool
     trust_score: int
     decision_reason: str
+    metrics: dict[str, Any] = Field(default_factory=dict)
 
 
 class TrustRouterResult(BaseModel):
@@ -91,7 +101,7 @@ class TrustRouterResult(BaseModel):
     request_id: str
     created_at: str
     category: str = "weather"
-    city: str
+    city: str  # the requested location input (city or pair label)
     primary_mode: str | None = None
     outcome: Outcome
     fallback_used: bool
@@ -100,18 +110,24 @@ class TrustRouterResult(BaseModel):
     trust_score: TrustScore
     attempts: list[ProviderAttempt] = Field(default_factory=list)
     decision_timeline: list[DecisionStep] = Field(default_factory=list)
-    response: WeatherResponse
+    response: CanonicalResponse
 
 
 class TrustRouterRequest(BaseModel):
     """Client input. Deliberately NO URLs: provider endpoints are pinned
-    server-side to the local simulators."""
+    server-side to the local simulators.
 
-    city: str = Field(default="Bengaluru", min_length=1, max_length=80)
+    `city` is the original (weather) field name; `location` generalizes it.
+    """
+
+    city: str | None = Field(default=None, min_length=1, max_length=80)
+    location: str | None = Field(default=None, min_length=1, max_length=80)
+    category: str = "weather"
 
 
 class PrimaryModeRequest(BaseModel):
     mode: str
+    category: str = "weather"
 
 
 class ProviderInfo(BaseModel):
@@ -122,12 +138,24 @@ class ProviderInfo(BaseModel):
     modes: list[str] | None = None
 
 
-class ProvidersCatalog(BaseModel):
-    category: str = "weather"
+class CategoryCatalogEntry(BaseModel):
+    """One supported category with its approved local providers."""
+
+    category: str
+    label: str
+    input_hint: str
+    default_location: str
     primary: ProviderInfo
     backup: ProviderInfo
 
 
+class ProvidersCatalog(BaseModel):
+    """Catalog of all supported categories (provider-agnostic gateway)."""
+
+    categories: list[CategoryCatalogEntry]
+
+
 class PrimaryModeResponse(BaseModel):
     mode: str
+    category: str = "weather"
     message: str | None = None

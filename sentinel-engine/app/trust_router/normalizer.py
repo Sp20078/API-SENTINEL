@@ -7,7 +7,7 @@ still raises SchemaViolation on anything un-mappable, with an exact reason.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -18,14 +18,19 @@ class SchemaViolation(Exception):
 
 @dataclass(frozen=True)
 class RawCanonical:
-    """Canonical field values extracted from one provider's raw payload."""
+    """Canonical field values extracted from one provider's raw payload.
+
+    Weather populates the flat fields; other categories (FX) populate
+    `metrics` and leave the weather-specific fields as None.
+    """
 
     location: str
-    temperature_c: float
-    humidity_percent: int
-    condition: str
-    observed_at: str
-    provider_id: str
+    temperature_c: float | None = None
+    humidity_percent: int | None = None
+    condition: str | None = None
+    observed_at: str = ""
+    provider_id: str = ""
+    metrics: dict[str, Any] = field(default_factory=dict)
 
 
 def _parse_ts(value: str) -> datetime:

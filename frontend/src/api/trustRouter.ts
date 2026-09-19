@@ -52,6 +52,7 @@ export interface ProviderAttempt {
 }
 
 export interface WeatherResponse {
+  category?: string;
   location: string | null;
   temperature_c: number | null;
   humidity_percent: number | null;
@@ -61,7 +62,12 @@ export interface WeatherResponse {
   fallback_used: boolean;
   trust_score: number;
   decision_reason: string;
+  metrics?: Record<string, number | string>;
 }
+
+export type WeatherResponseOrCanonical = WeatherResponse & {
+  category: string;
+};
 
 export interface TrustRouterResult {
   request_id: string;
@@ -79,6 +85,15 @@ export interface TrustRouterResult {
   response: WeatherResponse;
 }
 
+export interface CategoryCatalogEntry {
+  category: string;
+  label: string;
+  input_hint: string;
+  default_location: string;
+  primary: ProviderInfo;
+  backup: ProviderInfo;
+}
+
 export interface ProviderInfo {
   role: "primary" | "backup";
   id: string;
@@ -88,10 +103,10 @@ export interface ProviderInfo {
 }
 
 export interface ProvidersCatalog {
-  category: string;
-  primary: ProviderInfo;
-  backup: ProviderInfo;
+  categories: CategoryCatalogEntry[];
 }
+
+export type TrustCategory = "weather" | "fx";
 
 export const TRUST_CITIES = [
   "Bengaluru",
@@ -101,6 +116,8 @@ export const TRUST_CITIES = [
   "Tokyo",
   "Sydney",
 ];
+
+export const TRUST_PAIRS = ["USD/INR", "USD/EUR", "USD/GBP", "USD/JPY", "EUR/USD", "GBP/USD"];
 
 export const DEFAULT_MODES = [
   "healthy",
@@ -155,12 +172,15 @@ async function safeDetail(resp: Response): Promise<string | null> {
 export const trustApi = {
   getProviders: () => getJson<ProvidersCatalog>(`${ENGINE_BASE}/trust-router/providers`),
 
-  request: (city: string) =>
-    postJson<TrustRouterResult>(`${ENGINE_BASE}/trust-router/request`, { city }),
+  request: (location: string, category: TrustCategory) =>
+    postJson<TrustRouterResult>(`${ENGINE_BASE}/trust-router/request`, {
+      location,
+      category,
+    }),
 
-  setPrimaryMode: (mode: string) =>
-    postJson<{ mode: string; message: string | null }>(
+  setPrimaryMode: (mode: string, category: TrustCategory) =>
+    postJson<{ mode: string; category: string; message: string | null }>(
       `${ENGINE_BASE}/trust-router/primary-mode`,
-      { mode },
+      { mode, category },
     ),
 };

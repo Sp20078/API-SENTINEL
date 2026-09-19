@@ -1,158 +1,23 @@
-"""Trust Router integration tests (API Sentinel Mesh).
+"""Trust Router integration tests (API Sentinel Mesh, weather MVP scenarios).
 
 Runs against a FRESH app built from build_trust_router_app() — deliberately
-NOT the session-scoped scanner client — with provider HTTP served by an
-in-thread mock uvicorn on an ephemeral loopback port (no :8002 dependency,
-no cross-test ordering fragility). The slow scenario really exercises the
-2.0 s read timeout; everything else is fast.
+NOT the session-scoped scanner client — with provider HTTP served by a
+shared in-thread mock uvicorn on an ephemeral loopback port (fixtures in
+conftest_tr.py, mock in trust_mock.py). The slow scenario really exercises
+the 2.0 s read timeout; everything else is fast.
 """
 
 from __future__ import annotations
 
-import threading
-import time
 import uuid
-from datetime import datetime, timedelta, timezone
 
-import httpx
 import pytest
-import uvicorn
-from fastapi import FastAPI, HTTPException
 
-from app.trust_router.api import build_trust_router_app
-
-# ---------------------------------------------------------------------------
-# Controllable mock provider server (ephemeral port, shared in-process state)
-# ---------------------------------------------------------------------------
-
-STATE: dict = {
-    "primary_mode": "healthy",
-    "primary_up": True,
-    "backup_up": True,
-    "leak_fields": [],  # extra prohibited fields to merge into a valid payload
-}
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
-def _stale_iso(minutes: int) -> str:
-    return (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat(
-        timespec="seconds"
-    ).replace("+00:00", "Z")
-
-
-def build_mock_app() -> FastAPI:
-    app = FastAPI()
-
-    @app.get("/primary/weather")
-    def primary(city: str):
-        if not STATE["primary_up"]:
-            raise HTTPException(status_code=503, detail="primary down")
-        mode = STATE["primary_mode"]
-        if mode == "http_503":
-            raise HTTPException(status_code=503, detail="primary 503 (simulated)")
-        if mode == "slow_response":
-            time.sleep(2.2)  # just past the engine's 2.0 s read timeout
-        payload = {
-            "city": city,
-            "temp_c": 27.5,
-            "humidity": 64,
-            "condition": "Partly cloudy",
-            "observed_at": _now_iso(),
-            "provider": "mock-primary",
-        }
-        if mode == "malformed_schema":
-            payload = {
-                "city": city,
-                "temp_c": "27.5",  # wrong type
-                "humidity": 64,
-                "observed_at": _now_iso(),
-                "provider": "mock-primary",
-                "internal_user_id": "user-424242",
-            }
-        if mode == "stale_data":
-            payload["observed_at"] = _stale_iso(90)
-        for field in STATE["leak_fields"]:
-            payload[field] = "leaked-value"
-        return payload
-
-    @app.get("/backup/weather")
-    def backup(city: str):
-        if not STATE["backup_up"]:
-            raise HTTPException(status_code=503, detail="backup down")
-        return {
-            "meta": {"city_name": city, "provider": "mock-backup"},
-            "current": {
-                "tempC": 27.5,
-                "relHumidity": 64,
-                "sky": "Partly cloudy",
-                "ts_iso": _now_iso(),
-            },
-            "extra_field_ignored": {"build": 7},
-        }
-
-    @app.get("/primary/mode")
-    def read_mode():
-        return {"mode": STATE["primary_mode"]}
-
-    @app.post("/primary/mode")
-    def write_mode(body: dict):
-        mode = body.get("mode")
-        if mode not in {"healthy", "slow_response", "http_503", "malformed_schema", "stale_data"}:
-            raise HTTPException(status_code=422, detail="unknown mode")
-        STATE["primary_mode"] = mode
-        return {"mode": mode, "message": f"set to {mode}"}
-
-    return app
-
-
-@pytest.fixture(scope="module")
-def mock_providers():
-    server = uvicorn.Server(
-        uvicorn.Config(build_mock_app(), host="127.0.0.1", port=0, log_level="error")
-    )
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    for _ in range(100):
-        if server.started:
-            break
-        time.sleep(0.05)
-    assert server.started, "mock provider server did not start"
-    port = server.servers[0].sockets[0].getsockname()[1]
-    yield f"http://127.0.0.1:{port}"
-    server.should_exit = True
-    thread.join(timeout=5)
-
-
-@pytest.fixture()
-def tr_client(mock_providers, monkeypatch):
-    """Fresh Trust Router app per test, pointed at the mock providers.
-
-    Overrides env so the app is fully isolated from :8002 and from the
-    scanner's session app; resets mock state after each test.
-    """
-    base = mock_providers
-    monkeypatch.setenv("TRUST_ROUTER_PRIMARY_URL", f"{base}/primary/weather")
-    monkeypatch.setenv("TRUST_ROUTER_BACKUP_URL", f"{base}/backup/weather")
-    monkeypatch.setenv("TRUST_ROUTER_PRIMARY_MODE_URL", f"{base}/primary/mode")
-    STATE.update(
-        primary_mode="healthy",
-        primary_up=True,
-        backup_up=True,
-        leak_fields=[],
-    )
-    from fastapi.testclient import TestClient
-
-    with TestClient(build_trust_router_app()) as client:
-        yield client
-    STATE.update(
-        primary_mode="healthy",
-        primary_up=True,
-        backup_up=True,
-        leak_fields=[],
-    )
+from tests.conftest_tr import (  # noqa: F401  (fixture registration)
+    mock_providers,
+    tr_client,
+)
+from tests.trust_mock import STATE, _now_iso, _stale_iso
 
 
 def _request(client, city: str = "Bengaluru") -> dict:
@@ -297,20 +162,24 @@ def test_providers_catalog(tr_client) -> None:
     r = tr_client.get("/trust-router/providers")
     assert r.status_code == 200
     body = r.json()
-    assert body["category"] == "weather"
-    assert body["primary"]["role"] == "primary"
-    assert body["backup"]["role"] == "backup"
-    assert set(body["primary"]["modes"]) == {
+    categories = {entry["category"]: entry for entry in body["categories"]}
+    assert set(categories) == {"weather", "fx"}
+    weather = categories["weather"]
+    assert weather["primary"]["role"] == "primary"
+    assert weather["backup"]["role"] == "backup"
+    assert set(weather["primary"]["modes"]) == {
         "healthy",
         "slow_response",
         "http_503",
         "malformed_schema",
         "stale_data",
     }
+    assert weather["default_location"] == "Bengaluru"
     # provider URLs must be loopback — never anything remote
-    for side in ("primary", "backup"):
-        url = body[side]["url"]
-        assert url.startswith("http://127.0.0.1") or url.startswith("http://localhost")
+    for entry in categories.values():
+        for side in ("primary", "backup"):
+            url = entry[side]["url"]
+            assert url.startswith("http://127.0.0.1") or url.startswith("http://localhost")
 
 
 def test_primary_mode_proxy_roundtrip(tr_client) -> None:
@@ -400,7 +269,11 @@ def test_guard_rejects_remote_and_credential_urls() -> None:
 
 def test_audit_store_fifo_cap_and_id_space() -> None:
     from app.trust_router.audit import AuditStore
-    from app.trust_router.models import TrustRouterResult, TrustScore, WeatherResponse
+    from app.trust_router.models import (
+        CanonicalResponse,
+        TrustRouterResult,
+        TrustScore,
+    )
 
     store = AuditStore(max_records=3)
     ids = [store.next_request_id() for _ in range(3)]
@@ -415,7 +288,8 @@ def test_audit_store_fifo_cap_and_id_space() -> None:
             fallback_used=False,
             decision_reason="test",
             trust_score=TrustScore(total=100, band="trusted", hard_gates_passed=True),
-            response=WeatherResponse(
+            response=CanonicalResponse(
+                category="weather",
                 source="primary:p",
                 fallback_used=False,
                 trust_score=100,

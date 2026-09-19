@@ -1,10 +1,10 @@
-"""Trust Router orchestration.
+"""Trust Router orchestration (category-agnostic).
 
-Flow:
-  request → call primary (timed) → validate schema → evaluate policies
-          → if all pass: return normalized primary response
+Flow, driven entirely by the CategorySpec from the registry:
+  request → parse location → call primary (timed) → validate schema
+          → evaluate policies → if all pass: return normalized primary
           → else: call backup (timed) → validate → policies
-                → if pass: return normalized backup response (fallback)
+                → if pass: return normalized backup (fallback)
                 → else: safe degraded response (no fabricated values)
 
 Every stage appends to a decision timeline; the full record is auditable.
@@ -19,14 +19,14 @@ import httpx
 
 from .audit import audit_store
 from .models import (
+    CanonicalResponse,
     DecisionStep,
     PolicyCheck,
     ProviderAttempt,
     TrustRouterResult,
     TrustScore,
-    WeatherResponse,
 )
-from .normalizer import SchemaViolation, normalize, normalize_backup, normalize_primary
+from .normalizer import RawCanonical, SchemaViolation
 from .policies import (
     CHECK_LABELS,
     ProviderObservation,
@@ -34,34 +34,32 @@ from .policies import (
     failed_gates,
     find_prohibited_fields,
 )
-from .providers import ProviderConfig, ProviderCall, call_provider
-from .schema import REGISTRY, validate_backup_body
-
-CATEGORY = "weather"
-
-PRIMARY_PROVIDER_ID = "local-weather-primary-v1"
-BACKUP_PROVIDER_ID = "local-weather-backup-v1"
+from .providers import ProviderCall, ProviderConfig, call_provider
+from .registry import CategorySpec, get_category
 
 
 class TrustRouter:
-    """Configurable orchestrator; provider transports are injectable for tests."""
+    """Category-agnostic orchestrator; transports are injectable for tests."""
 
     def __init__(
         self,
         primary: ProviderConfig,
         backup: ProviderConfig,
+        spec: CategorySpec,
         client_factory: Any = None,
         now_fn: Any = dt.datetime.now,
         mode_fn: Any = None,
     ) -> None:
         self.primary = primary
         self.backup = backup
+        self.spec = spec
         self._client_factory = client_factory or _default_client_factory()
         self._now_fn = now_fn
         self._mode_fn = mode_fn or _current_primary_mode
 
     # ------------------------------------------------------------------ flow
-    def handle_request(self, city: str) -> TrustRouterResult:
+    def handle_request(self, location: str, category: str | None = None) -> TrustRouterResult:
+        spec = get_category(category) if category else self.spec
         request_id = audit_store.next_request_id()
         started = self._now_fn()
         timeline: list[DecisionStep] = []
@@ -71,19 +69,59 @@ class TrustRouter:
             return int((self._now_fn() - started).total_seconds() * 1000)
 
         def iso_now() -> str:
-            return self._now_fn().astimezone(dt.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+            return (
+                self._now_fn()
+                .astimezone(dt.timezone.utc)
+                .isoformat(timespec="milliseconds")
+                .replace("+00:00", "Z")
+            )
 
         def step(t_ms: int, name: str, status: str, detail: str) -> None:
-            timeline.append(DecisionStep(t_ms=t_ms, step=name, status=status, detail=detail, at=iso_now()))
+            timeline.append(
+                DecisionStep(t_ms=t_ms, step=name, status=status, detail=detail, at=iso_now())
+            )
 
-        step(0, "request_received", "info", f"weather request for city={city}")
+        # parse/validate the location into provider query params
+        try:
+            values = spec.parse_location(location)
+        except ValueError as exc:
+            step(0, "request_received", "fail", str(exc))
+            reason = f"invalid location: {exc}"
+            result = TrustRouterResult(
+                request_id=request_id,
+                created_at=iso_now(),
+                category=spec.category,
+                city=location,
+                primary_mode=self._safe_mode(spec),
+                outcome="degraded",
+                fallback_used=True,
+                decision_reason=reason,
+                policy_checks=[],
+                trust_score=TrustScore(total=0, band="untrusted", hard_gates_passed=False),
+                attempts=[],
+                decision_timeline=timeline,
+                response=CanonicalResponse(
+                    category=spec.category,
+                    location=None,
+                    observed_at=None,
+                    source="none",
+                    fallback_used=True,
+                    trust_score=0,
+                    decision_reason=reason,
+                ),
+            )
+            audit_store.put(result)
+            return result
+
+        params = dict(zip(spec.query_param_names, values))
+        step(0, "request_received", "info", f"{spec.category} request for {spec.input_hint.lower()}={location}")
 
         with self._client_factory() as client:
             # ---- primary attempt -----------------------------------------
-            primary_call = call_provider(client, self.primary, city)
-            primary_obs = self._observe(self.primary, primary_call)
-            primary_checks = evaluate_policies(primary_obs)
-            primary_score = _score_or_zero(primary_obs)
+            primary_call = call_provider(client, self.primary, params)
+            primary_obs = self._observe(spec, self.primary, primary_call)
+            primary_checks = evaluate_policies(primary_obs, spec.required_canonical_fields)
+            primary_score = _score_or_zero(primary_obs, len(spec.required_canonical_fields))
             attempts.append(
                 _attempt_from(self.primary, primary_call, primary_obs, primary_score)
             )
@@ -101,22 +139,18 @@ class TrustRouter:
                 _schema_detail("primary", primary_obs),
             )
             failed = failed_gates(primary_checks)
-            if not failed:
-                step(now_ms(), "primary_policies", "ok", "all policies pass")
-            else:
-                step(
-                    now_ms(),
-                    "primary_policies",
-                    "fail",
-                    _failed_detail(primary_checks),
-                )
+            step(
+                now_ms(),
+                "primary_policies",
+                "ok" if not failed else "fail",
+                "all policies pass" if not failed else _failed_detail(primary_checks),
+            )
 
             if not failed:
                 canonical = primary_obs.canonical
                 assert canonical is not None  # all gates passed ⇒ canonical exists
                 decision_reason = (
-                    "primary accepted: all policies pass "
-                    f"(trust {primary_score.total})"
+                    "primary accepted: all policies pass " f"(trust {primary_score.total})"
                 )
                 step(
                     now_ms(),
@@ -127,7 +161,8 @@ class TrustRouter:
                 result = self._result(
                     request_id=request_id,
                     created_at=iso_now(),
-                    city=city,
+                    category=spec.category,
+                    city=location,
                     outcome="primary",
                     fallback_used=False,
                     decision_reason=decision_reason,
@@ -135,16 +170,9 @@ class TrustRouter:
                     trust_score=primary_score,
                     attempts=attempts,
                     decision_timeline=timeline,
-                    response=WeatherResponse(
-                        location=canonical.location,
-                        temperature_c=canonical.temperature_c,
-                        humidity_percent=canonical.humidity_percent,
-                        condition=canonical.condition,
-                        observed_at=canonical.observed_at,
-                        source=f"primary:{self.primary.provider_id}",
-                        fallback_used=False,
-                        trust_score=primary_score.total,
-                        decision_reason=decision_reason,
+                    response=self._canonical(
+                        spec, canonical, f"primary:{self.primary.provider_id}", False,
+                        primary_score.total, decision_reason,
                     ),
                 )
                 audit_store.put(result)
@@ -158,10 +186,10 @@ class TrustRouter:
             )
 
             # ---- backup attempt ------------------------------------------
-            backup_call = call_provider(client, self.backup, city)
-            backup_obs = self._observe(self.backup, backup_call)
-            backup_checks = evaluate_policies(backup_obs)
-            backup_score = _score_or_zero(backup_obs)
+            backup_call = call_provider(client, self.backup, params)
+            backup_obs = self._observe(spec, self.backup, backup_call)
+            backup_checks = evaluate_policies(backup_obs, spec.required_canonical_fields)
+            backup_score = _score_or_zero(backup_obs, len(spec.required_canonical_fields))
             attempts.append(
                 _attempt_from(self.backup, backup_call, backup_obs, backup_score)
             )
@@ -172,19 +200,16 @@ class TrustRouter:
                 "ok" if backup_call.status_code == 200 else "fail",
                 _call_detail("backup", backup_call),
             )
+            backup_failed = failed_gates(backup_checks)
+            backup_ok = not backup_obs.schema_errors and not backup_failed
             step(
                 now_ms(),
                 "backup_validated",
-                "ok" if not backup_obs.schema_errors and not failed_gates(backup_checks) else "fail",
-                (
-                    "schema valid, all policies pass"
-                    if not backup_obs.schema_errors and not failed_gates(backup_checks)
-                    else _failed_detail(backup_checks)
-                ),
+                "ok" if backup_ok else "fail",
+                "schema valid, all policies pass" if backup_ok else _failed_detail(backup_checks),
             )
 
-            backup_failed = failed_gates(backup_checks)
-            if not backup_failed:
+            if backup_ok:
                 canonical = backup_obs.canonical
                 assert canonical is not None
                 primary_failure = _failure_summary(primary_call, primary_checks)
@@ -201,7 +226,8 @@ class TrustRouter:
                 result = self._result(
                     request_id=request_id,
                     created_at=iso_now(),
-                    city=city,
+                    category=spec.category,
+                    city=location,
                     outcome="fallback",
                     fallback_used=True,
                     decision_reason=decision_reason,
@@ -209,16 +235,9 @@ class TrustRouter:
                     trust_score=backup_score,
                     attempts=attempts,
                     decision_timeline=timeline,
-                    response=WeatherResponse(
-                        location=canonical.location,
-                        temperature_c=canonical.temperature_c,
-                        humidity_percent=canonical.humidity_percent,
-                        condition=canonical.condition,
-                        observed_at=canonical.observed_at,
-                        source=f"backup:{self.backup.provider_id}",
-                        fallback_used=True,
-                        trust_score=backup_score.total,
-                        decision_reason=decision_reason,
+                    response=self._canonical(
+                        spec, canonical, f"backup:{self.backup.provider_id}", True,
+                        backup_score.total, decision_reason,
                     ),
                 )
                 audit_store.put(result)
@@ -236,87 +255,117 @@ class TrustRouter:
                 "degraded",
                 "fail",
                 "both providers failed → returning safe degraded response "
-                "(no weather values fabricated)",
+                "(no values fabricated)",
             )
             result = self._result(
                 request_id=request_id,
                 created_at=iso_now(),
-                city=city,
+                category=spec.category,
+                city=location,
                 outcome="degraded",
                 fallback_used=True,
                 decision_reason=decision_reason,
                 policy_checks=primary_checks,
-                trust_score=TrustScore(total=0, band="untrusted", hard_gates_passed=False, failed_gates=failed),
+                trust_score=TrustScore(
+                    total=0, band="untrusted", hard_gates_passed=False, failed_gates=failed
+                ),
                 attempts=attempts,
                 decision_timeline=timeline,
-                response=WeatherResponse(
-                    location=city,  # echoed from the request, never fabricated
-                    temperature_c=None,
-                    humidity_percent=None,
-                    condition=None,
-                    observed_at=None,
-                    source="none",
-                    fallback_used=True,
-                    trust_score=0,
-                    decision_reason=decision_reason,
+                response=self._canonical(
+                    spec,
+                    RawCanonical(location=location),
+                    "none",
+                    True,
+                    0,
+                    decision_reason,
+                    degraded=True,
                 ),
             )
             audit_store.put(result)
             return result
 
     # ------------------------------------------------------------- internals
-    def _observe(self, config: ProviderConfig, call: ProviderCall) -> ProviderObservation:
+    def _observe(
+        self, spec: CategorySpec, config: ProviderConfig, call: ProviderCall
+    ) -> ProviderObservation:
         """Validate + normalize one raw provider call into an observation."""
-        role = config.role
         body = call.body
         schema_errors: list[str] = []
-        canonical = None
+        canonical: RawCanonical | None = None
 
         if call.status_code == 200 and body is not None:
-            if role == "primary":
-                schema_errors = REGISTRY.primary.validate(body)
-                if not schema_errors:
-                    try:
-                        canonical = normalize_primary(body)
-                    except SchemaViolation as exc:
-                        schema_errors = [str(exc)]
-            elif role == "backup":
-                schema_errors = validate_backup_body(body)
-                if not schema_errors:
-                    try:
-                        canonical = normalize_backup(body)
-                    except SchemaViolation as exc:
-                        schema_errors = [str(exc)]
+            if config.role == "primary":
+                schema_errors = spec.primary_schema.validate(body)
+                normalizer = spec.normalize_primary
+            else:
+                schema_errors = spec.validate_backup(body)
+                normalizer = spec.normalize_backup
+            if not schema_errors:
+                try:
+                    canonical = normalizer(body)
+                except SchemaViolation as exc:
+                    schema_errors = [str(exc)]
         elif call.status_code == 200 and body is None:
             schema_errors = ["provider returned a non-JSON body"]
 
         return ProviderObservation(
-            role=role,
+            role=config.role,
             provider_id=config.provider_id,
             status_code=call.status_code,
             latency_ms=call.latency_ms,
             error=call.error,
             schema_errors=schema_errors,
-            prohibited_found=find_prohibited_fields(body) if isinstance(body, dict) else [],
+            prohibited_found=find_prohibited_fields(body, spec.prohibited_fields)
+            if isinstance(body, dict)
+            else [],
             canonical=canonical,
             raw_fields=_raw_field_names(body),
         )
 
+    def _canonical(
+        self,
+        spec: CategorySpec,
+        raw: RawCanonical,
+        source: str,
+        fallback_used: bool,
+        trust_score: int,
+        reason: str,
+        degraded: bool = False,
+    ) -> CanonicalResponse:
+        if degraded:
+            # Safe degraded response: echo only the requested location —
+            # never fabricate metrics or observed values.
+            return CanonicalResponse(
+                category=spec.category,
+                location=raw.location,
+                observed_at=None,
+                source=source,
+                fallback_used=fallback_used,
+                trust_score=trust_score,
+                decision_reason=reason,
+            )
+        return spec.build_canonical(raw, source, fallback_used, trust_score, reason)
+
     def _result(self, **kwargs: Any) -> TrustRouterResult:
         payload = dict(kwargs)
-        payload["category"] = CATEGORY
         try:
-            payload["primary_mode"] = self._mode_fn()
+            payload["primary_mode"] = self._mode_fn(self.spec)
         except Exception:
             payload["primary_mode"] = None
         return TrustRouterResult(**payload)
 
+    def _safe_mode(self, spec: CategorySpec) -> str | None:
+        try:
+            return self._mode_fn(spec)
+        except Exception:
+            return None
+
 
 # ---------------------------------------------------------------- helpers
-def _score_or_zero(observation: ProviderObservation):
+def _score_or_zero(observation: ProviderObservation, required_count: int):
     from .scoring import compute_trust_score
 
-    return compute_trust_score(observation)
+    return compute_trust_score(observation, required_count)
 
 
 def _default_client_factory():
@@ -341,7 +390,9 @@ def _schema_detail(role: str, observation: ProviderObservation) -> str:
 
 def _failed_detail(checks: list[PolicyCheck]) -> str:
     failed = [check for check in checks if check.status == "fail"]
-    return "; ".join(f"{CHECK_LABELS.get(check.id, check.id)}: {check.detail}" for check in failed)
+    return "; ".join(
+        f"{CHECK_LABELS.get(check.id, check.id)}: {check.detail}" for check in failed
+    )
 
 
 def _failure_summary(call: ProviderCall, checks: list[PolicyCheck]) -> str:
@@ -352,7 +403,7 @@ def _failure_summary(call: ProviderCall, checks: list[PolicyCheck]) -> str:
 
 
 def _raw_field_names(body: Any) -> list[str]:
-    """Top-level (dotted for nested) field NAMES only — values are never stored."""
+    """Top-level (dotted) field NAMES only — values are never stored."""
     if not isinstance(body, dict):
         return []
 
@@ -369,14 +420,12 @@ def _raw_field_names(body: Any) -> list[str]:
     return names
 
 
-def _current_primary_mode() -> str | None:
+def _current_primary_mode(spec: CategorySpec) -> str | None:
     """Best-effort read of the simulator's current mode for the record."""
     try:
-        import httpx as _httpx
-
         from .config import primary_mode_url
 
-        response = _httpx.get(primary_mode_url(), timeout=1.0)
+        response = httpx.get(primary_mode_url(spec), params={"category": spec.category}, timeout=1.0)
         if response.status_code == 200:
             mode = response.json().get("mode")
             return mode if isinstance(mode, str) else None

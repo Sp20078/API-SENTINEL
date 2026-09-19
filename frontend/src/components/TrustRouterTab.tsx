@@ -1,9 +1,15 @@
-import { useCallback, useEffect, useState } from "react";
-import { DEFAULT_MODES, TRUST_CITIES, trustApi } from "../api/trustRouter";
+import { useCallback, useState } from "react";
+import {
+  DEFAULT_MODES,
+  TRUST_CITIES,
+  TRUST_PAIRS,
+  trustApi,
+} from "../api/trustRouter";
 import type {
   DecisionStep,
   PolicyCheck,
   ProviderAttempt,
+  TrustCategory,
   TrustRouterResult,
   TrustScore,
 } from "../api/trustRouter";
@@ -178,8 +184,14 @@ function AttemptCard({ attempt }: { attempt: ProviderAttempt }) {
   );
 }
 
+const CATEGORY_META: Record<TrustCategory, { label: string; icon: string }> = {
+  weather: { label: "Weather", icon: "🌤️" },
+  fx: { label: "Currency rates (FX)", icon: "💱" },
+};
+
 export default function TrustRouterTab() {
-  const [city, setCity] = useState("Bengaluru");
+  const [category, setCategory] = useState<TrustCategory>("weather");
+  const [location, setLocation] = useState("Bengaluru");
   const [mode, setMode] = useState("healthy");
   const [busy, setBusy] = useState(false);
   const [settingMode, setSettingMode] = useState(false);
@@ -188,21 +200,12 @@ export default function TrustRouterTab() {
   const [notice, setNotice] = useState<string | null>(null);
   const [currentMode, setCurrentMode] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    trustApi
-      .getProviders()
-      .then((p) => {
-        if (!cancelled) {
-          const modes = p.primary.modes ?? DEFAULT_MODES;
-          if (!modes.includes(mode)) setMode("healthy");
-        }
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  const switchCategory = useCallback((next: TrustCategory) => {
+    setCategory(next);
+    setLocation(next === "weather" ? "Bengaluru" : "USD/INR");
+    setResult(null);
+    setError(null);
+    setNotice(null);
   }, []);
 
   const changeMode = useCallback(
@@ -211,25 +214,26 @@ export default function TrustRouterTab() {
       setNotice(null);
       setSettingMode(true);
       try {
-        const resp = await trustApi.setPrimaryMode(next);
+        const resp = await trustApi.setPrimaryMode(next, category);
         setMode(resp.mode);
         setCurrentMode(resp.mode);
-        setNotice(`Primary provider mode set to ${resp.mode}.`);
+        setNotice(`Primary provider mode set to ${resp.mode} (${resp.category}).`);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Unexpected error");
       } finally {
         setSettingMode(false);
       }
     },
-    [],
+    [category],
   );
 
   const run = useCallback(async () => {
     setError(null);
     setNotice(null);
     setBusy(true);
+    const fallbackLocation = category === "weather" ? "Bengaluru" : "USD/INR";
     try {
-      const r = await trustApi.request(city.trim() || "Bengaluru");
+      const r = await trustApi.request(location.trim() || fallbackLocation, category);
       setResult(r);
       if (r.primary_mode) setCurrentMode(r.primary_mode);
     } catch (e) {
@@ -237,7 +241,7 @@ export default function TrustRouterTab() {
     } finally {
       setBusy(false);
     }
-  }, [city]);
+  }, [category, location]);
 
   const primary = result?.attempts.find((a) => a.role === "primary") ?? null;
   const backup = result?.attempts.find((a) => a.role === "backup") ?? null;
@@ -273,21 +277,47 @@ export default function TrustRouterTab() {
 
       {/* Controls */}
       <Card>
-        <div className="grid gap-4 lg:grid-cols-[1fr_1fr_auto] lg:items-end">
+        <div className="grid gap-4 lg:grid-cols-[auto_1fr_1fr_auto] lg:items-end">
           <label className="block">
             <span className="mb-1 block text-[11px] uppercase tracking-wider text-slate-500">
-              City
+              Category
+            </span>
+            <div className="flex items-center gap-1 rounded-lg border border-line bg-surface-850 p-1">
+              {(Object.keys(CATEGORY_META) as TrustCategory[]).map((cat) => (
+                <button
+                  key={cat}
+                  onClick={() => switchCategory(cat)}
+                  className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition ${
+                    category === cat
+                      ? "bg-accent/15 text-accent"
+                      : "text-slate-400 hover:bg-surface-800 hover:text-slate-200"
+                  }`}
+                >
+                  <span>{CATEGORY_META[cat].icon}</span>
+                  {CATEGORY_META[cat].label}
+                </button>
+              ))}
+            </div>
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-[11px] uppercase tracking-wider text-slate-500">
+              {category === "weather" ? "City" : "Currency pair"}
             </span>
             <input
-              list="trust-cities"
-              value={city}
-              onChange={(e) => setCity(e.target.value)}
-              placeholder="Bengaluru"
+              list={category === "weather" ? "trust-cities" : "trust-pairs"}
+              value={location}
+              onChange={(e) => setLocation(e.target.value)}
+              placeholder={category === "weather" ? "Bengaluru" : "USD/INR"}
               className="w-full rounded-lg border border-line bg-surface-950 px-3 py-2 text-sm text-slate-200 focus:border-accent focus:outline-none"
             />
             <datalist id="trust-cities">
               {TRUST_CITIES.map((c) => (
                 <option key={c} value={c} />
+              ))}
+            </datalist>
+            <datalist id="trust-pairs">
+              {TRUST_PAIRS.map((p) => (
+                <option key={p} value={p} />
               ))}
             </datalist>
           </label>
@@ -407,7 +437,7 @@ export default function TrustRouterTab() {
           <Card className={result.outcome === "degraded" ? "border-red-500/40" : ""}>
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h3 className="text-sm font-semibold text-slate-300">
-                Final normalized weather ({result.category})
+                Final normalized response ({CATEGORY_META[result.category as TrustCategory]?.label ?? result.category})
               </h3>
               <span className="rounded-md border border-line bg-surface-800 px-2 py-0.5 text-[11px] font-semibold tracking-wide text-slate-400">
                 🧪 synthetic · local demo
@@ -417,6 +447,33 @@ export default function TrustRouterTab() {
               <p className="mt-3 rounded-lg border border-red-500/30 bg-red-500/5 px-4 py-3 text-sm text-red-300">
                 {result.response.decision_reason}
               </p>
+            ) : result.category === "fx" ? (
+              <div className="mt-3 grid gap-4 sm:grid-cols-4">
+                <div>
+                  <p className="text-[11px] uppercase tracking-wider text-slate-500">Pair</p>
+                  <p className="text-lg font-semibold text-slate-100">{result.response.location}</p>
+                </div>
+                <div>
+                  <p className="text-[11px] uppercase tracking-wider text-slate-500">Rate</p>
+                  <p className="text-lg font-semibold text-slate-100">
+                    {result.response.metrics?.rate as number}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[11px] uppercase tracking-wider text-slate-500">
+                    Inverse rate
+                  </p>
+                  <p className="text-lg font-semibold text-slate-100">
+                    {result.response.metrics?.inverse_rate as number}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[11px] uppercase tracking-wider text-slate-500">Observed</p>
+                  <p className="text-lg font-semibold text-slate-100">
+                    {result.response.observed_at ?? "—"}
+                  </p>
+                </div>
+              </div>
             ) : (
               <div className="mt-3 grid gap-4 sm:grid-cols-4">
                 <div>
