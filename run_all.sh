@@ -84,11 +84,12 @@ wait_for_url() { # url name log
   exit 1
 }
 
-start_python_service() { # dir port name entrypoint
+start_python_service() { # dir port name entrypoint [marker_path]
   local dir="$1"
   local port="$2"
   local name="$3"
   local entry="$4"
+  local marker="${5:-}"
   local log="$LOG_DIR/$name.log"
   if [ ! -f "$dir/$entry" ]; then
     echo "[run_all] SKIP  $name (not built yet — will auto-start once implemented)"
@@ -96,6 +97,16 @@ start_python_service() { # dir port name entrypoint
   fi
   if port_in_use "$port"; then
     echo "[run_all] SKIP  $name — port $port already in use (assuming it is running)"
+    # Stale-code guard: if the running service predates a known route, it is
+    # an OLD process (e.g. started before a feature landed) — say so loudly.
+    if [ -n "$marker" ]; then
+      if command -v curl >/dev/null 2>&1; then
+        if ! curl -fs -o /dev/null --max-time 2 "http://127.0.0.1:$port$marker"; then
+          echo "[run_all] WARN  $name on :$port looks STALE (missing $marker) — restart it!"
+          echo "[run_all]       e.g.: kill $(ss -tlnp 2>/dev/null | grep ":$port " | grep -oP 'pid=\K[0-9]+' | head -1) && ./run_all.sh"
+        fi
+      fi
+    fi
     return 0
   fi
   if [ ! -x "$dir/venv/bin/python" ]; then
@@ -129,9 +140,9 @@ start_frontend() {
 }
 
 # --- launch ----------------------------------------------------------------
-start_python_service "$DEMO_DIR" "$DEMO_PORT" "demo-api" "app/main.py"
-start_python_service "$ENGINE_DIR" "$ENGINE_PORT" "scanner-engine" "app/main.py"
-start_python_service "$WEATHER_DIR" "$WEATHER_PORT" "weather-providers" "app/main.py"
+start_python_service "$DEMO_DIR" "$DEMO_PORT" "demo-api" "app/main.py" "/api/products"
+start_python_service "$ENGINE_DIR" "$ENGINE_PORT" "scanner-engine" "app/main.py" "/trust-router/providers"
+start_python_service "$WEATHER_DIR" "$WEATHER_PORT" "weather-providers" "app/main.py" "/backup/fx"
 start_frontend
 
 if port_in_use "$DEMO_PORT" && [ "$KEEP_MODE" -ne 0 ]; then

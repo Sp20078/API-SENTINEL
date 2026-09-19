@@ -410,7 +410,7 @@ export default function TrustRouterTab() {
                 <Spinner /> Routing…
               </>
             ) : (
-              <>⚡ Get Trusted Weather</>
+              <>⚡ {category === "weather" ? "Get Trusted Weather" : "Get Trusted Rate"}</>
             )}
           </button>
         </div>
