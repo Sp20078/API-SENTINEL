@@ -20,21 +20,35 @@ results are recorded here.
 
 ---
 
-## Phase 1 — Target Demo API ⬜ NOT STARTED
+## Phase 1 — Target Demo API ✅ DONE
 
 Planned: FastAPI app on :8001 with token auth, seed identities/orders, `vulnerable`/`secure`
 modes (runtime-switchable via `POST /admin/mode`), `/health` exposing active mode, `/openapi.json`.
 
-- [ ] Endpoints: `/health`, `/api/products`, `/api/orders/{order_id}`, `/api/users/{user_id}`,
+- [x] Endpoints: `/health`, `/api/products`, `/api/orders/{order_id}`, `/api/users/{user_id}`,
       `/api/users/{user_id}/orders`, `/api/admin/refunds`, `/admin/mode`, `/openapi.json`
-- [ ] Vulnerable mode: Alice gets HTTP 200 for Bob's order (acceptance test)
-- [ ] Secure mode: Alice gets HTTP 403 for Bob's order (acceptance test)
-- [ ] Alice can access her own order in both modes (acceptance test)
-- [ ] Admin can access Bob's order in secure mode (acceptance test)
-- [ ] 401 for missing/invalid token; 404 for nonexistent ids; mode persisted for process lifetime
+- [x] Vulnerable mode: Alice gets HTTP 200 for Bob's order (acceptance test)
+- [x] Secure mode: Alice gets HTTP 403 for Bob's order (acceptance test)
+- [x] Alice can access her own order in both modes (acceptance test)
+- [x] Admin can access Bob's order in secure mode (acceptance test)
+- [x] 401 for missing/invalid token; 404 for nonexistent ids; mode persisted for process lifetime
 
-**Verified:** —
-**Limitations:** —
+**Verified (2026-09-19):**
+- `pytest`: **26/26 passed** (`vulnerable-demo-api/venv/bin/python -m pytest tests -v`)
+  - vulnerable mode: Alice→Bob order 200 w/ private fields; Alice reads Bob's full profile;
+    Alice lists Bob's orders; customer triggers admin refund; 401 missing/invalid token; 404 unknown id
+  - secure mode: Alice→Bob order 403; own order 200; admin→Bob order 200; cross-user profile
+    and order list 403; customer refund 403; admin refund 200; 401 without token
+  - `/openapi.json`: 200, OpenAPI 3.x, all 7 paths + `{order_id}`/`{user_id}` path params present
+- Live uvicorn smoke test on 127.0.0.1:8001 (real HTTP): health mode badge, runtime mode switch,
+  hero request 200 (vulnerable) → 403 (secure), admin access 200, `/openapi.json` 200.
+
+**Assumptions / limitations:**
+- `vulnerable` is the default mode on startup (matches the demo story).
+- In secure mode, cross-user profile reads return **403** (spec: customers access only their own
+  profile) rather than a redacted public-profile 200 — gives the scanner an unambiguous pass.
+- Mode is in-process state (resets on restart); no persistence needed for the MVP.
+- Corrupted UTF-16 README from the failed first turn was deleted and rewritten in UTF-8.
 
 ---
 
