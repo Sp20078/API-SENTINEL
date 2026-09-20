@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   DEFAULT_MODES,
   TRUST_CITIES,
@@ -16,6 +16,43 @@ import type {
 import { Card, Spinner, StatusDot } from "./ui";
 
 const PRIMARY_MODES = DEFAULT_MODES;
+
+// --- live-data provenance (providers answer live → cached → synthetic) -----
+const PROVENANCE_META: Record<
+  string,
+  { icon: string; label: string; className: string }
+> = {
+  live: {
+    icon: "🌐",
+    label: "LIVE DATA · real upstream",
+    className: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
+  },
+  cached: {
+    icon: "🕒",
+    label: "CACHED LIVE DATA · recent real reading",
+    className: "border-amber-500/40 bg-amber-500/10 text-amber-300",
+  },
+  synthetic: {
+    icon: "🧪",
+    label: "SYNTHETIC FALLBACK · offline",
+    className: "border-slate-500/40 bg-slate-500/10 text-slate-300",
+  },
+};
+
+function ProvenanceBadge({ source, compact }: { source: string | null | undefined; compact?: boolean }) {
+  if (!source) return null;
+  const meta = PROVENANCE_META[source];
+  if (!meta) return null;
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-semibold tracking-wide ${meta.className}`}
+      title={`Data provenance: ${source}`}
+    >
+      <span>{meta.icon}</span>
+      {compact ? source.toUpperCase() : meta.label}
+    </span>
+  );
+}
 
 function StepDot({ status }: { status: DecisionStep["status"] }) {
   const color =
@@ -139,6 +176,7 @@ function AttemptCard({ attempt }: { attempt: ProviderAttempt }) {
         </span>
       </div>
       <p className="font-mono text-xs text-slate-400">{attempt.provider}</p>
+      <ProvenanceBadge source={attempt.data_source} compact />
       <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-slate-300">
         <span>
           HTTP <span className="font-mono">{attempt.status_code ?? "—"}</span>
@@ -233,6 +271,23 @@ export default function TrustRouterTab() {
   const [notice, setNotice] = useState<string | null>(null);
   const [currentMode, setCurrentMode] = useState<string | null>(null);
 
+  // Fault modes are per-category on the backend — always re-sync the mode
+  // display from the engine when the category changes (and on first mount),
+  // instead of trusting the last-used state or the shared localStorage value.
+  const syncMode = useCallback(async (cat: TrustCategory) => {
+    try {
+      const resp = await trustApi.getPrimaryMode(cat);
+      setMode(resp.mode);
+      setCurrentMode(resp.mode);
+    } catch {
+      setCurrentMode(null); // engine/simulator unreachable — don't show a stale mode
+    }
+  }, []);
+
+  useEffect(() => {
+    void syncMode(category);
+  }, [category, syncMode]);
+
   const switchCategory = useCallback((next: TrustCategory) => {
     setCategory(next);
     persist(CATEGORY_KEY, next);
@@ -240,6 +295,7 @@ export default function TrustRouterTab() {
     setResult(null);
     setError(null);
     setNotice(null);
+    setCurrentMode(null); // re-synced from the engine by the effect above
   }, []);
 
   const changeMode = useCallback(
@@ -302,11 +358,15 @@ export default function TrustRouterTab() {
 
   return (
     <div className="space-y-5">
-      {/* Demo label */}
+      {/* Demo label — provenance-aware */}
       <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
-        <span className="inline-flex items-center gap-1.5 rounded-md border border-line bg-surface-800 px-2.5 py-1 font-semibold tracking-wide text-slate-400">
-          🧪 SYNTHETIC · LOCAL DEMO — no real weather data, no external calls
-        </span>
+        {result?.response?.data_source ? (
+          <ProvenanceBadge source={result.response.data_source} />
+        ) : (
+          <span className="inline-flex items-center gap-1.5 rounded-md border border-line bg-surface-800 px-2.5 py-1 font-semibold tracking-wide text-slate-400">
+            🌐 LIVE-BY-DEFAULT · Open-Meteo & Frankfurter · synthetic fallback offline
+          </span>
+        )}
         <span className="inline-flex items-center gap-1.5">
           <StatusDot ok={true} /> providers :8002 · router :8000
         </span>
@@ -501,9 +561,13 @@ export default function TrustRouterTab() {
               <h3 className="text-sm font-semibold text-slate-300">
                 Final normalized response ({CATEGORY_META[result.category as TrustCategory]?.label ?? result.category})
               </h3>
-              <span className="rounded-md border border-line bg-surface-800 px-2 py-0.5 text-[11px] font-semibold tracking-wide text-slate-400">
-                🧪 synthetic · local demo
-              </span>
+              {result.response.data_source ? (
+                <ProvenanceBadge source={result.response.data_source} />
+              ) : (
+                <span className="rounded-md border border-line bg-surface-800 px-2 py-0.5 text-[11px] font-semibold tracking-wide text-slate-400">
+                  no provider answered
+                </span>
+              )}
             </div>
             {result.outcome === "degraded" ? (
               <p className="mt-3 rounded-lg border border-red-500/30 bg-red-500/5 px-4 py-3 text-sm text-red-300">

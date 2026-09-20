@@ -54,6 +54,7 @@ def build_mock_app() -> FastAPI:
             "condition": "Partly cloudy",
             "observed_at": _now_iso(),
             "provider": "mock-primary",
+            "data_source": "live",
         }
         if mode == "malformed_schema":
             payload = {
@@ -62,6 +63,7 @@ def build_mock_app() -> FastAPI:
                 "humidity": 64,
                 "observed_at": _now_iso(),
                 "provider": "mock-primary",
+                "data_source": "live",
                 "internal_user_id": "user-424242",  # prohibited
             }
         if mode == "stale_data":
@@ -83,6 +85,7 @@ def build_mock_app() -> FastAPI:
                 "ts_iso": _now_iso(),
             },
             "extra_field_ignored": {"build": 7},
+            "data_source": "live",
         }
 
     @app.get("/primary/fx")
@@ -101,6 +104,7 @@ def build_mock_app() -> FastAPI:
             "inverse_rate": 0.012,
             "observed_at": _now_iso(),
             "provider": "mock-fx-primary",
+            "data_source": "live",
         }
         if mode == "malformed_schema":
             payload = {
@@ -110,6 +114,7 @@ def build_mock_app() -> FastAPI:
                 # 'inverse_rate' intentionally missing
                 "observed_at": _now_iso(),
                 "provider": "mock-fx-primary",
+                "data_source": "live",
                 "customer_email": "leak@example.com",  # prohibited
             }
         if mode == "stale_data":
@@ -132,6 +137,7 @@ def build_mock_app() -> FastAPI:
             },
             "service": {"name": "mock-fx-backup"},
             "disallowed_noise": "ignore me",
+            "data_source": "live",
         }
 
     @app.get("/primary/mode")

@@ -4,6 +4,7 @@ Endpoints (MVP spec + multi-category extension):
   GET  /trust-router/providers            catalog of approved local providers (all categories)
   POST /trust-router/request              run one trusted request: {"location"|"city", "category"}
   POST /trust-router/primary-mode         switch a category's primary simulator fault mode
+  GET  /trust-router/primary-mode         read a category's current primary fault mode
   GET  /trust-router/audit/{request_id}   fetch a stored decision record
 
 `city` remains accepted (weather MVP field); `location` generalizes it
@@ -113,6 +114,37 @@ def trusted_request(body: TrustRouterRequest) -> TrustRouterResult:
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     return get_router_instance(spec).handle_request(location, spec.category)
+
+
+@router.get("/primary-mode", response_model=PrimaryModeResponse)
+def read_primary_mode(category: str = "weather") -> PrimaryModeResponse:
+    """Read the current fault mode of a category's primary simulator.
+
+    Lets clients (dashboard) sync their per-category mode display with the
+    simulator's real state instead of guessing.
+    """
+    import httpx
+
+    try:
+        spec = get_category(category)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+    try:
+        response = httpx.get(
+            primary_mode_url(spec), params={"category": spec.category}, timeout=2.0
+        )
+        mode = response.json().get("mode") if response.status_code == 200 else None
+    except (httpx.HTTPError, ValueError):
+        mode = None
+    if not isinstance(mode, str):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="primary provider simulator unreachable",
+        )
+    return PrimaryModeResponse(
+        mode=mode, category=spec.category, message=f"current {spec.category} primary mode is {mode}"
+    )
 
 
 @router.post("/primary-mode", response_model=PrimaryModeResponse)

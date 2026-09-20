@@ -13,7 +13,11 @@
 >   **currency rates (FX)** — same policy engine, same trust score, same audit trail, proving the
 >   gateway is provider-agnostic.
 >
-> **100% local. 100% deterministic. No AI keys, no paid APIs, no cloud, no accounts, no database.**
+> **Providers serve real data by default** (free, keyless Open-Meteo weather + Frankfurter/ECB FX)
+> with an honest live → cached → synthetic fallback chain. **100% keyless: no AI keys, no paid APIs,
+> no cloud, no accounts, no database.** The scanner and the Trust Router engine itself never leave
+> localhost; only the two provider-simulator modules fetch from the internet, and live data can be
+> switched off entirely (`TRUST_ROUTER_LIVE_DATA=0` or `POST /data-mode {"data_mode":"synthetic"}`).
 
 ---
 
@@ -91,7 +95,7 @@ Four local services, no cloud dependencies:
 ```text
 ┌────────────────────┐      ┌──────────────────────┐      ┌───────────────────────────┐
 │ frontend (Vite)    │─────▶│ sentinel-engine      │─────▶│ provider-simulators :8002 │
-│ React dashboard    │      │ FastAPI :8000        │      │ local synthetic providers │
+│ React dashboard    │      │ FastAPI :8000        │      │ live-data providers       │
 │ :5173              │      │ Module A: BOLA scan  │      │ /primary/…  (5 fault      │
 │  Tab 1: Authorization│    │ Module B: Trust      │      │  modes per category)      │
 │         Sentinel   │      │          Router      │      │ /backup/…    (nested      │
@@ -111,7 +115,49 @@ Four local services, no cloud dependencies:
 | `frontend/` | 5173 | Dark developer-tool dashboard with two tabs: **Authorization Sentinel** (scans, evidence, Verify Fix) and **Trust Router** (policy checks, score, timeline, fallback) |
 | `sentinel-engine/` | 8000 | Module A: OpenAPI discovery, deterministic BOLA checks, findings, generated tests. Module B: Trust Router policy engine, normalizer, audit trail (`app/trust_router/`, import-isolated from the scanner) |
 | `vulnerable-demo-api/` | 8001 | E-commerce demo API with **vulnerable**/**secure** modes — the BOLA scan target |
-| `weather-providers/` | 8002 | Module B's local provider simulators for **both categories** (weather + FX): per-category mode-switchable **primaries** (`healthy`, `slow_response`, `http_503`, `malformed_schema`, `stale_data`) and fixed healthy **backups** with deliberately different nested JSON schemas |
+| `weather-providers/` | 8002 | Module B's provider simulators for **both categories** (weather + FX): per-category mode-switchable **primaries** (`healthy`, `slow_response`, `http_503`, `malformed_schema`, `stale_data`) and fixed healthy **backups** with deliberately different nested JSON schemas. Serve **real data by default** (live → cached → synthetic) from free keyless upstreams |
+
+---
+
+## 🌐 Live Real-World Data (providers)
+
+The provider simulators on :8002 are **live by default** — the Trust Router demo runs on real
+weather and real exchange rates with zero signup:
+
+| Category | Upstream | Notes |
+|---|---|---|
+| weather | [Open-Meteo](https://open-meteo.com) geocoding + forecast APIs | free, keyless, no account |
+| FX | [Frankfurter](https://frankfurter.dev) (ECB reference rates) | free, keyless, no account |
+
+Every request resolves through the same **data-tier chain**, top-down, silently:
+
+1. **live** — the upstream answered now; real observation/rate with a real `observed_at`
+2. **cached** — a recent live answer reused (≤10 min TTL without re-fetching; ≤30 min served
+   while the network is flaky, so the Trust Router's own freshness policy stays the honest judge)
+3. **synthetic** — the deterministic local generator (offline fallback; the demo never breaks
+   because the internet does)
+
+The answering provider stamps every payload with a `data_source` marker (`live` / `cached` /
+`synthetic`), which the Trust Router carries through its evidence and audit trail, and the
+dashboard renders as a provenance badge (🌐 live · 🕒 cached · 🧪 synthetic).
+
+**Controls**
+
+```bash
+# Per-request override
+curl 'http://127.0.0.1:8002/primary/weather?city=Berlin&data_mode=synthetic'
+
+# Service-wide, per category (weather | fx)
+curl -X POST http://127.0.0.1:8002/data-mode -H 'Content-Type: application/json' \
+     -d '{"data_mode": "synthetic", "category": "weather"}'
+
+# Fully offline (env kill switch — CI default)
+TRUST_ROUTER_LIVE_DATA=0 uvicorn app.main:app --port 8002
+```
+
+Only `weather-providers/app/live_weather.py` and `live_fx.py` may open outbound connections
+(≤1.8 s budget, circuit-breaker after a failure, small in-memory caches). The vulnerable demo
+API, the scanner engine, and the Trust Router itself remain 100% loopback-only.
 
 **Trust Router endpoints**
 
@@ -120,6 +166,7 @@ Four local services, no cloud dependencies:
 | `GET /trust-router/providers` | Catalog of approved local providers and primary fault modes |
 | `POST /trust-router/request` | `{"city": "Bengaluru"}` → normalized response + policy checks + score + timeline |
 | `POST /trust-router/primary-mode` | `{"mode": "stale_data"}` → switch the primary simulator's fault mode |
+| `GET /trust-router/primary-mode?category=…` | Read a category's current primary fault mode (dashboard state sync) |
 | `GET /trust-router/audit/{request_id}` | The full stored decision record for one request |
 
 The gateway is **category-agnostic**: each category is one `CategorySpec` entry in
@@ -152,7 +199,9 @@ calls have hard timeouts (connect 1.5 s / read 2.0 s) and degrade gracefully int
 
 ### The Trust Router Demo — policy-aware fallback
 
-1. Open the **Trust Router** tab (everything stays synthetic and local).
+1. Open the **Trust Router** tab. Providers answer **live by default** — real Open-Meteo weather
+   and real ECB/Frankfurter rates, with a 🌐 LIVE badge on the response (they silently fall back
+   to cached/synthetic data offline, shown as 🕒/🧪).
 2. Primary mode **`healthy`** → click **Get Trusted Weather**:
    - All six policy checks pass ✓, trust score **100**, banner reads **PRIMARY USED**.
 3. Switch the primary provider mode to **`stale_data`** and run again:
@@ -226,9 +275,14 @@ This is an **educational tool for a controlled local environment**:
   Module A is a deterministic own-resource vs. cross-resource comparison using synthetic data.
 - `Authorization` headers are **redacted** in every frontend-visible response.
 - The Trust Router never stores raw provider bodies in its audit trail — only field **names**, with
-  prohibited ones listed under `raw_fields_redacted`.
-- All data is synthetic. No production data, real credentials, real weather APIs, or external
-  services are used. No paid APIs, AI APIs, cloud deployment, user accounts, or database.
+  prohibited ones listed under `raw_fields_redacted` (the short `data_source` provenance marker is
+  the only value carried through, deliberately).
+- Demo/BOLA data (users, orders, tokens) is synthetic. Provider data is **live by default** from
+  the free keyless Open-Meteo and Frankfurter upstreams — no API keys, no accounts, no paid
+  services. Only the two provider-simulator modules may leave localhost; the scanner and Trust
+  Router engine never do. Live data can be disabled at any time with the
+  `TRUST_ROUTER_LIVE_DATA=0` env kill switch or `POST /data-mode {"data_mode":"synthetic"}`.
+  No production data, real credentials, AI APIs, cloud deployment, user accounts, or database.
 
 ---
 
@@ -315,6 +369,7 @@ Phased build with acceptance gates — see [TASKS.md](TASKS.md) for the live che
 | 2 | Sentinel scanner engine (Module A) | ✅ Done |
 | 3 | Basic dashboard | ✅ Done |
 | 3M | **API Sentinel Mesh: Trust Router (Module B)** — providers, policy engine, fallback, audit | ✅ Done |
+| 3L | **Live real-world provider data** — Open-Meteo + Frankfurter, live → cached → synthetic, provenance end-to-end | ✅ Done |
 | 4 | Presentation-ready finding details | ⬜ Next |
 | 5 | Polish, Docker Compose, demo script | ⬜ Planned |
 | 6 | Optional AI explanation (opt-in only) | ⬜ Blocked until approved |

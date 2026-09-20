@@ -31,12 +31,15 @@ case "${1:-start}" in
     start_one "scanner-engine" "sentinel-engine" \
       "exec venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --log-level warning" \
       "scanner-engine.log" 8000
+    start_one "weather-providers" "weather-providers" \
+      "exec venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8002 --log-level warning" \
+      "weather-providers.log" 8002
     start_one "frontend" "frontend" \
       "exec npm run dev" \
       "frontend.log" 5173
     ;;
   status)
-    for p in 8001 8000 5173; do
+    for p in 8001 8000 8002 5173; do
       if port_up "$p"; then echo "$p UP"; else echo "$p DOWN"; fi
     done
     ;;

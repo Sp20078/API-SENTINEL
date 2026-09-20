@@ -130,7 +130,7 @@ class TrustRouter:
                 now_ms(),
                 "primary_call",
                 "ok" if primary_call.status_code == 200 else "fail",
-                _call_detail("primary", primary_call),
+                _call_detail("primary", primary_call, primary_obs.data_source),
             )
             step(
                 now_ms(),
@@ -173,6 +173,7 @@ class TrustRouter:
                     response=self._canonical(
                         spec, canonical, f"primary:{self.primary.provider_id}", False,
                         primary_score.total, decision_reason,
+                        data_source=primary_obs.data_source,
                     ),
                 )
                 audit_store.put(result)
@@ -198,7 +199,7 @@ class TrustRouter:
                 now_ms(),
                 "backup_call",
                 "ok" if backup_call.status_code == 200 else "fail",
-                _call_detail("backup", backup_call),
+                _call_detail("backup", backup_call, backup_obs.data_source),
             )
             backup_failed = failed_gates(backup_checks)
             backup_ok = not backup_obs.schema_errors and not backup_failed
@@ -238,6 +239,7 @@ class TrustRouter:
                     response=self._canonical(
                         spec, canonical, f"backup:{self.backup.provider_id}", True,
                         backup_score.total, decision_reason,
+                        data_source=backup_obs.data_source,
                     ),
                 )
                 audit_store.put(result)
@@ -320,6 +322,7 @@ class TrustRouter:
             else [],
             canonical=canonical,
             raw_fields=_raw_field_names(body),
+            data_source=_data_source_marker(body),
         )
 
     def _canonical(
@@ -331,6 +334,7 @@ class TrustRouter:
         trust_score: int,
         reason: str,
         degraded: bool = False,
+        data_source: str | None = None,
     ) -> CanonicalResponse:
         if degraded:
             # Safe degraded response: echo only the requested location —
@@ -344,7 +348,9 @@ class TrustRouter:
                 trust_score=trust_score,
                 decision_reason=reason,
             )
-        return spec.build_canonical(raw, source, fallback_used, trust_score, reason)
+        canonical = spec.build_canonical(raw, source, fallback_used, trust_score, reason)
+        canonical.data_source = data_source
+        return canonical
 
     def _result(self, **kwargs: Any) -> TrustRouterResult:
         payload = dict(kwargs)
@@ -374,12 +380,28 @@ def _default_client_factory():
     return default_client_factory()
 
 
-def _call_detail(role: str, call: ProviderCall) -> str:
+def _call_detail(role: str, call: ProviderCall, data_source: str | None = None) -> str:
     if call.status_code is None:
         return f"{role} call failed: {call.error}"
     if call.status_code != 200:
         return f"{role} call returned HTTP {call.status_code}"
-    return f"{role} provider responded 200 in {call.latency_ms} ms"
+    detail = f"{role} provider responded 200 in {call.latency_ms} ms"
+    if data_source:
+        detail += f" (data_source={data_source})"
+    return detail
+
+
+def _data_source_marker(body: Any) -> str | None:
+    """The provider's own provenance marker ('live'/'cached'/'synthetic').
+
+    Read from the raw body's top-level `data_source` field; values are
+    short enum-like strings, so — unlike other raw values — this one is
+    safe to keep for auditability.
+    """
+    if not isinstance(body, dict):
+        return None
+    marker = body.get("data_source")
+    return marker if isinstance(marker, str) and marker else None
 
 
 def _schema_detail(role: str, observation: ProviderObservation) -> str:
@@ -443,6 +465,7 @@ def _attempt_from(
         status_code=call.status_code,
         latency_ms=call.latency_ms,
         error=call.error,
+        data_source=observation.data_source,
         schema_valid=(not observation.schema_errors) if call.status_code == 200 else None,
         schema_errors=observation.schema_errors,
         raw_fields=observation.raw_fields,

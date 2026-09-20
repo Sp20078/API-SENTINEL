@@ -44,6 +44,8 @@ export interface ProviderAttempt {
   status_code: number | null;
   latency_ms: number | null;
   error: string | null;
+  /** Provider provenance marker: 'live' | 'cached' | 'synthetic' | null */
+  data_source?: string | null;
   schema_valid: boolean | null;
   schema_errors: string[];
   raw_fields: string[];
@@ -62,6 +64,8 @@ export interface WeatherResponse {
   fallback_used: boolean;
   trust_score: number;
   decision_reason: string;
+  /** Provenance of the provider that actually answered: 'live' | 'cached' | 'synthetic' | null */
+  data_source?: string | null;
   metrics?: Record<string, number | string>;
 }
 
@@ -182,5 +186,10 @@ export const trustApi = {
     postJson<{ mode: string; category: string; message: string | null }>(
       `${ENGINE_BASE}/trust-router/primary-mode`,
       { mode, category },
+    ),
+
+  getPrimaryMode: (category: TrustCategory) =>
+    getJson<{ mode: string; category: string; message: string | null }>(
+      `${ENGINE_BASE}/trust-router/primary-mode?category=${encodeURIComponent(category)}`,
     ),
 };

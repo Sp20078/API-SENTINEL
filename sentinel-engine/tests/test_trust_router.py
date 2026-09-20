@@ -60,6 +60,35 @@ def test_scenario_1_healthy_primary_used_without_fallback(tr_client) -> None:
     assert any(s["step"] == "final_selection" for s in result["decision_timeline"])
 
 
+def test_data_source_provenance_flows_through_primary(tr_client) -> None:
+    """The provider's data_source marker (live/cached/synthetic) survives into
+    the attempt evidence, the canonical response, and the timeline detail."""
+    result = _request(tr_client)
+    assert result["attempts"][0]["data_source"] == "live"
+    assert result["response"]["data_source"] == "live"
+    call_step = next(s for s in result["decision_timeline"] if s["step"] == "primary_call")
+    assert "data_source=live" in call_step["detail"]
+
+
+def test_data_source_provenance_follows_the_answering_provider(tr_client) -> None:
+    """On fallback, provenance comes from the backup that actually answered."""
+    STATE["primary_mode"] = "http_503"
+    result = _request(tr_client)
+    assert result["outcome"] == "fallback"
+    assert result["attempts"][0]["data_source"] is None  # 503: no body, no marker
+    assert result["attempts"][1]["data_source"] == "live"
+    assert result["response"]["data_source"] == "live"
+
+
+def test_data_source_absent_in_safe_degraded_response(tr_client) -> None:
+    """No provider answered → no provenance marker on the degraded response."""
+    STATE["primary_mode"] = "http_503"
+    STATE["backup_up"] = False
+    result = _request(tr_client)
+    assert result["outcome"] == "degraded"
+    assert result["response"]["data_source"] is None
+
+
 def test_scenario_2_slow_primary_triggers_backup(tr_client) -> None:
     STATE["primary_mode"] = "slow_response"  # 2.2 s > 2.0 s read timeout
     result = _request(tr_client)
@@ -190,6 +219,27 @@ def test_primary_mode_proxy_roundtrip(tr_client) -> None:
 
     r = tr_client.post("/trust-router/primary-mode", json={"mode": "bogus"})
     assert r.status_code == 422
+
+
+def test_read_primary_mode_reflects_real_per_category_state(tr_client) -> None:
+    """GET mirrors the simulator's real mode, independently per category."""
+    r = tr_client.get("/trust-router/primary-mode", params={"category": "weather"})
+    assert r.status_code == 200
+    assert r.json() == {
+        "mode": "healthy",
+        "category": "weather",
+        "message": "current weather primary mode is healthy",
+    }
+
+    # flip fx only — weather read must stay untouched
+    tr_client.post("/trust-router/primary-mode", json={"mode": "stale_data", "category": "fx"})
+    assert tr_client.get("/trust-router/primary-mode", params={"category": "fx"}).json()["mode"] == "stale_data"
+    assert tr_client.get("/trust-router/primary-mode", params={"category": "weather"}).json()["mode"] == "healthy"
+
+    assert (
+        tr_client.get("/trust-router/primary-mode", params={"category": "chaos"}).status_code
+        == 422
+    )
 
 
 def test_audit_record_roundtrip(tr_client) -> None:

@@ -142,7 +142,7 @@ start_frontend() {
 # --- launch ----------------------------------------------------------------
 start_python_service "$DEMO_DIR" "$DEMO_PORT" "demo-api" "app/main.py" "/api/products"
 start_python_service "$ENGINE_DIR" "$ENGINE_PORT" "scanner-engine" "app/main.py" "/trust-router/providers"
-start_python_service "$WEATHER_DIR" "$WEATHER_PORT" "weather-providers" "app/main.py" "/backup/fx"
+start_python_service "$WEATHER_DIR" "$WEATHER_PORT" "weather-providers" "app/main.py" "/data-mode"
 start_frontend
 
 if port_in_use "$DEMO_PORT" && [ "$KEEP_MODE" -ne 0 ]; then

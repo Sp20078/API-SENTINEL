@@ -61,13 +61,19 @@ class DecisionStep(BaseModel):
 
 class ProviderAttempt(BaseModel):
     """Evidence for one provider call. Raw bodies are never stored — only
-    field NAMES; prohibited ones are moved to raw_fields_redacted."""
+    field NAMES; prohibited ones are moved to raw_fields_redacted.
+
+    `data_source` is the provider's own provenance marker ('live', 'cached'
+    or 'synthetic') copied out of the raw body — a short enum-like string,
+    never sensitive payload content.
+    """
 
     role: Literal["primary", "backup"]
     provider: str
     status_code: int | None = None
     latency_ms: int | None = None
     error: str | None = None
+    data_source: str | None = None
     schema_valid: bool | None = None
     schema_errors: list[str] = Field(default_factory=list)
     raw_fields: list[str] = Field(default_factory=list)
@@ -92,6 +98,7 @@ class CanonicalResponse(BaseModel):
     fallback_used: bool
     trust_score: int
     decision_reason: str
+    data_source: str | None = None  # provenance of the answering provider
     metrics: dict[str, Any] = Field(default_factory=dict)
 
 

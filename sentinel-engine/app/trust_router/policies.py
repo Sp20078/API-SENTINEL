@@ -54,6 +54,7 @@ class ProviderObservation:
     prohibited_found: list[str] = field(default_factory=list)
     canonical: RawCanonical | None = None
     raw_fields: list[str] = field(default_factory=list)
+    data_source: str | None = None  # provider's own provenance marker
 
 
 def _check(

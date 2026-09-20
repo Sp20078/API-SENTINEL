@@ -43,7 +43,7 @@ export default function App() {
           </nav>
           <div className="ml-auto flex flex-wrap items-center gap-2">
             <span className="inline-flex items-center gap-1.5 rounded-md border border-line bg-surface-800 px-2.5 py-1 text-[11px] font-semibold tracking-wide text-slate-400">
-              🧪 synthetic · local demo
+              🌐 live-by-default · keyless upstreams · synthetic fallback
             </span>
           </div>
         </div>
@@ -54,7 +54,8 @@ export default function App() {
       </main>
 
       <footer className="pb-4 text-center text-[11px] text-slate-600">
-        API Sentinel Mesh · educational tool · 100% local services, synthetic data only
+        API Sentinel Mesh · educational tool · 100% local services · live provider data (Open-Meteo,
+        Frankfurter) with synthetic fallback
       </footer>
     </div>
   );

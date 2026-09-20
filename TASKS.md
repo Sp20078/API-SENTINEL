@@ -161,6 +161,55 @@ summary cards (score, endpoints, severity counts, pass/fail), findings list.
 
 ---
 
+## Phase 3L — Live Real-World Provider Data ✅ DONE
+
+Planned: the Trust Router demo runs on real data by default. Provider simulators resolve every
+request through a live → cached → synthetic chain (free, keyless upstreams), stamp provenance,
+and the engine + dashboard carry that provenance through evidence, audit, and UI.
+
+- [x] `live_weather.py` — Open-Meteo geocode + current conditions (keyless, ≤1.8 s budget,
+      10-min cache TTL, 30-min stale-serving window, circuit breaker, env kill switch)
+- [x] `live_fx.py` — Frankfurter/ECB rates with inverse-rate computation and `rate_date`
+- [x] `/data-mode` endpoints + per-request `?data_mode=` override (default: live)
+- [x] Engine carries `data_source` (live/cached/synthetic) through attempts, canonical response,
+      and the `primary_call`/`backup_call` timeline details; degraded responses carry none
+- [x] Dashboard provenance badges (🌐 LIVE · 🕒 CACHED · 🧪 SYNTHETIC) replace the old
+      "synthetic-only" labels; final-response card shows real values with honest provenance
+- [x] Tests: provider suite runs fully offline by default (`conftest.py` sets
+      `TRUST_ROUTER_LIVE_DATA=0`); live tests mock the HTTP seam — no real network in CI
+
+**Verified (2026-09-20):**
+- weather-providers pytest: **28/28 passed** (`weather-providers/venv/bin/python -m pytest -v`); engine full suite: **63 passed / 9 skipped** (skips are demo-subprocess tests that defer to a running :8001)
+- engine Trust Router suites: **29/29 passed** (incl. 3 new provenance-passthrough tests)
+- Live end-to-end smoke over real HTTP: `/primary/weather?city=Berlin` → real Open-Meteo reading
+  (16.5 °C, light rain, `data_source: cached` — a recent live fetch served within its TTL);
+  `/primary/fx?base=USD&quote=INR` → live ECB rate 95.88 with `rate_date`; Trust Router
+  `/trust-router/request` carried `response.data_source` for both categories; `stale_data` fault
+  mode over live data still fell back to the backup (trust 99); `?data_mode=synthetic` answered
+  offline with `data_source: synthetic`
+- Frontend `npm run build` clean (37 modules)
+
+**Addendum — frontend bug-review fixes (2026-09-20):**
+- New engine endpoint `GET /trust-router/primary-mode?category=…` (mirrors the simulator's real
+  state; 422 unknown category, 502 simulator unreachable) + test.
+- Trust Router tab now re-syncs its mode display from that endpoint on mount and on every
+  category switch — fault modes are per-category on the backend, and the UI previously kept one
+  shared mode value (wrong select value / stale "primary mode:" chip after switching).
+- App.tsx header chip and footer no longer claim "synthetic only" — they reflect live-by-default
+  data with offline fallback; AttemptCard no longer renders an empty wrapper when a provider
+  attempt carries no provenance marker.
+
+**Assumptions / limitations:**
+- The engine's freshness policy (≤30 min) judges live data honestly: ECB FX rates publish once
+  per working day, so `observed_at` is the *retrieval* instant and the ECB publication date
+  travels separately as `rate_date`.
+- Only `live_weather.py`/`live_fx.py` may leave localhost; the engine and scanner stay
+  loopback-only. `TRUST_ROUTER_LIVE_DATA=0` forces the fully-offline synthetic tier (CI default).
+- Provenance is the only raw provider *value* the engine stores — a deliberate, bounded
+  exception to the "field names only" audit rule.
+
+---
+
 ## Phase 4 — Presentation-Ready Finding Details ⬜ NOT STARTED
 
 Planned: finding detail panel with full evidence (redacted request incl. headers, response body,
